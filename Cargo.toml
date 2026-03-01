@@ -1,0 +1,6 @@
+[workspace]
+resolver = "3"
+members = ["frontend", "resolver"]
+
+[workspace.dependencies]
+tokio = { version = "1", features = ["full"] }

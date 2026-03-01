@@ -1,0 +1,25 @@
+services:
+  monadns:
+    build: .
+    container_name: monadns
+    restart: unless-stopped
+    # The resolver needs CAP_NET_ADMIN to manage nftables rules
+    cap_add:
+      - NET_ADMIN
+    # network_mode host is usually required, since the resolver manages nftables rules and adds routes
+    network_mode: host
+    environment:
+    # Defaults:
+    #  - MONADNS_CONFIG_PATH=/opt/monadns/config.toml
+    #  - MONADNS_DB_PATH=/opt/monadns/db.sqlite
+    #  - MONADNS_DNS_BIND=[::]:5553
+    #  - MONADNS_HTTP_BIND=[::]:8080
+
+    # Uncomment to enable Prometheus exporter:
+    #  - MONADNS_METRICS_BIND=[::]:9090
+      - RUST_LOG=info
+    volumes:
+      - data:/opt/monadns
+
+volumes:
+  data:

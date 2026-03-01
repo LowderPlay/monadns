@@ -1,0 +1,36 @@
+[package]
+name = "resolver"
+version = "0.1.0"
+edition = "2024"
+
+[dependencies]
+hickory-server = "0.26.0-alpha.1"
+hickory-resolver = { version = "0.26.0-alpha.1", features = ["tokio", "webpki-roots", "https-ring", "serde"] }
+hickory-proto = "0.26.0-alpha.1"
+arc-swap = "1.7.1"
+async-trait = "0.1.89"
+tokio = { workspace = true }
+dashmap = "7.0.0-rc2"
+lru = "0.16.3"
+ipnet = "2.11.0"
+log = "0.4.29"
+env_logger = "0.11.8"
+thiserror = "2.0.18"
+toml = "1"
+sqlx = { version = "0.8", features = ["sqlite", "runtime-tokio", "macros", "chrono"] }
+chrono = { version = "0.4.39", features = ["serde"] }
+reqwest = { version = "0.13.2" }
+nftables = "0.6.3"
+rtnetlink = "0.20.0"
+futures = "0.3.32"
+serde = { version = "1.0.219", features = ["derive"] }
+serde_json = "1.0.149"
+axum = "0.8.1"
+utoipa-axum = "0.2"
+utoipa = { version = "5.4.0", features = ["chrono"] }
+utoipa-swagger-ui = { version = "9", features = ["axum"] }
+axum-embed = "0.1.0"
+frontend = { path = "../frontend" }
+anyhow = "1.0.102"
+metrics = "0.24"
+metrics-exporter-prometheus = "0.18"
