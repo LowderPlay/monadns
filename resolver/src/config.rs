@@ -8,10 +8,25 @@ use std::sync::Arc;
 use hickory_proto::http::DEFAULT_DNS_QUERY_PATH;
 use log::{info, warn};
 
+const DEFAULT_POLICY_ROUTING_FWMARK: u32 = 1;
+const DEFAULT_POLICY_ROUTING_PRIORITY: u32 = 100;
+
+fn default_policy_routing_fwmark() -> u32 {
+    DEFAULT_POLICY_ROUTING_FWMARK
+}
+
+fn default_policy_routing_priority() -> u32 {
+    DEFAULT_POLICY_ROUTING_PRIORITY
+}
+
 #[derive(Clone, Debug, Serialize, Deserialize, utoipa::ToSchema)]
 pub struct Config {
     pub table_id: u8,
     pub iface: String,
+    #[serde(default = "default_policy_routing_fwmark")]
+    pub policy_routing_fwmark: u32,
+    #[serde(default = "default_policy_routing_priority")]
+    pub policy_routing_priority: u32,
     pub tcp_mss_clamp: Option<u32>,
     #[schema(value_type = Option<String>)]
     pub ipv4_snat: Option<IpAddr>,
@@ -29,6 +44,8 @@ impl Default for Config {
         Self {
             table_id: 100,
             iface: "wg0".to_string(),
+            policy_routing_fwmark: DEFAULT_POLICY_ROUTING_FWMARK,
+            policy_routing_priority: DEFAULT_POLICY_ROUTING_PRIORITY,
             tcp_mss_clamp: Some(1280),
             ipv4_snat: Some(IpAddr::V4(Ipv4Addr::new(10, 10, 10, 4))),
             ipv6_snat: None,
@@ -43,6 +60,8 @@ impl Default for Config {
 pub struct PatchConfig {
     pub table_id: Option<u8>,
     pub iface: Option<String>,
+    pub policy_routing_fwmark: Option<u32>,
+    pub policy_routing_priority: Option<u32>,
     pub tcp_mss_clamp: Option<Option<u32>>,
     #[schema(value_type = Option<Option<String>>)]
     pub ipv4_snat: Option<Option<IpAddr>>,
@@ -114,6 +133,8 @@ impl Config {
         Self {
             table_id: patch.table_id.unwrap_or(self.table_id),
             iface: patch.iface.unwrap_or_else(|| self.iface.clone()),
+            policy_routing_fwmark: patch.policy_routing_fwmark.unwrap_or(self.policy_routing_fwmark),
+            policy_routing_priority: patch.policy_routing_priority.unwrap_or(self.policy_routing_priority),
             tcp_mss_clamp: patch.tcp_mss_clamp.unwrap_or(self.tcp_mss_clamp),
             ipv4_snat: patch.ipv4_snat.unwrap_or(self.ipv4_snat),
             ipv6_snat: patch.ipv6_snat.unwrap_or(self.ipv6_snat),

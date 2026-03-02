@@ -21,6 +21,7 @@ pub struct NetworkManager {
     iface: String,
     nft_table_name: String,
     fwmark: u32,
+    policy_routing_priority: u32,
     tcp_mss_clamp: Option<u32>,
     ipv4_snat: Option<IpAddr>,
     ipv6_snat: Option<IpAddr>,
@@ -38,10 +39,17 @@ impl NetworkManager {
             iface: iface.to_string(),
             nft_table_name: "dns_steering".to_string(),
             fwmark: 1,
+            policy_routing_priority: 100,
             tcp_mss_clamp: None,
             ipv4_snat: None,
             ipv6_snat: None,
         }
+    }
+
+    pub fn set_policy_routing(&mut self, fwmark: u32, priority: u32) -> &mut NetworkManager {
+        self.fwmark = fwmark;
+        self.policy_routing_priority = priority;
+        self
     }
 
     pub fn set_tcp_mss_clamp(&mut self, tcp_mss_clamp: Option<u32>) -> &mut NetworkManager {
@@ -83,14 +91,14 @@ impl NetworkManager {
         handle.rule().add().v4()
             .table_id(self.table_id as u32)
             .fw_mark(self.fwmark)
-            .priority(100)
+            .priority(self.policy_routing_priority)
             .action(RuleAction::ToTable)
             .execute().await?;
 
         handle.rule().add().v6()
             .table_id(self.table_id as u32)
             .fw_mark(self.fwmark)
-            .priority(100)
+            .priority(self.policy_routing_priority)
             .action(RuleAction::ToTable)
             .execute().await?;
 
@@ -294,6 +302,11 @@ impl NetworkManager {
             ..Default::default()
         }
     }
+
+    fn has_managed_policy_markers(&self, attributes: &[RuleAttribute]) -> bool {
+        attributes.contains(&RuleAttribute::FwMark(self.fwmark))
+            && attributes.contains(&RuleAttribute::Priority(self.policy_routing_priority))
+    }
 }
 
 #[async_trait]
@@ -346,9 +359,9 @@ impl RouteController for NetworkManager {
         for version in [IpVersion::V4, IpVersion::V6] {
             let mut rules = handle.rule().get(version).execute();
             while let Some(rule) = rules.try_next().await? {
-                if rule.header.table == self.table_id &&
-                    rule.header.action == RuleAction::ToTable &&
-                    rule.attributes.contains(&RuleAttribute::FwMark(self.fwmark)) {
+                if rule.header.table == self.table_id
+                    && rule.header.action == RuleAction::ToTable
+                    && self.has_managed_policy_markers(&rule.attributes) {
                     handle.rule().del(rule).execute().await?;
                 }
             }

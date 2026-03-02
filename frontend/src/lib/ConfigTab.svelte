@@ -99,6 +99,20 @@
         <input id="table_id" type="number" bind:value={config.table_id} class="bg-zinc-900 border border-zinc-700 p-2 focus:outline-none focus:border-zinc-500" />
       </div>
 
+      <!-- Policy Routing FWMark -->
+      <div class="flex flex-col gap-1">
+        <label for="policy_routing_fwmark" class="text-sm font-bold text-zinc-300">Policy Routing FWMark</label>
+        <p class="text-xs text-zinc-500 mb-1">Packet mark used both in nftables and ip rule for steering. Set a unique value to avoid collisions with other tools.</p>
+        <input id="policy_routing_fwmark" type="number" bind:value={config.policy_routing_fwmark} class="bg-zinc-900 border border-zinc-700 p-2 focus:outline-none focus:border-zinc-500" />
+      </div>
+
+      <!-- Policy Routing Priority -->
+      <div class="flex flex-col gap-1">
+        <label for="policy_routing_priority" class="text-sm font-bold text-zinc-300">Policy Routing Priority</label>
+        <p class="text-xs text-zinc-500 mb-1">Priority of ip rule entries created by MonaDNS. Use a dedicated value to avoid touching foreign rules.</p>
+        <input id="policy_routing_priority" type="number" bind:value={config.policy_routing_priority} class="bg-zinc-900 border border-zinc-700 p-2 focus:outline-none focus:border-zinc-500" />
+      </div>
+
       <!-- TCP MSS Clamp -->
       <div class="flex flex-col gap-1">
         <label for="tcp_mss_clamp" class="text-sm font-bold text-zinc-300">TCP MSS Clamp</label>

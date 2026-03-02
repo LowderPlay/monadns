@@ -45,7 +45,9 @@ impl App {
 
     async fn create_state(config: &Config, domain_controller: Arc<SqliteDomainController>) -> anyhow::Result<HandlerState> {
         let mut route_controller = NetworkManager::new(config.table_id, &config.iface);
-        route_controller.set_tcp_mss_clamp(config.tcp_mss_clamp)
+        route_controller
+            .set_policy_routing(config.policy_routing_fwmark, config.policy_routing_priority)
+            .set_tcp_mss_clamp(config.tcp_mss_clamp)
             .set_ipv4_snat(config.ipv4_snat)
             .set_ipv6_snat(config.ipv6_snat);
         route_controller.init().await?;

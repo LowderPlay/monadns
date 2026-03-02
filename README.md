@@ -38,9 +38,10 @@ A Single Page Application (SPA) built with Svelte 5 and Vite. It interacts with 
   sudo ip route add default dev wg0 table 100 # replace wg0 with the interface
   ```
   If you use wg-quick, you can set `Table = 100` to add the route automatically.
+- **Policy routing identity**: MonaDNS adds `ip rule` entries keyed by `fwmark=1` and `priority=100` by default. Both values are configurable (`policy_routing_fwmark`, `policy_routing_priority`) to avoid collisions with other networking tools.
 ```bash
 sudo sysctl -w net.ipv4.conf.all.rp_filter=0 # Disable reverse path filtering
-sudo sysctl -w net.ipv4.ip_forward=1 # Enable forwarding (if you want to 
+sudo sysctl -w net.ipv4.ip_forward=1 # Enable forwarding (if you want to)
 ```
 
 ## Environment Variables
