@@ -1,8 +1,8 @@
 use std::path::PathBuf;
 use std::sync::Arc;
-use sqlx::sqlite::SqliteConnectOptions;
-use sqlx::{FromRow, SqlitePool};
-use log::{debug, info, error};
+use sqlx::sqlite::{SqliteConnectOptions, SqliteJournalMode, SqliteSynchronous};
+use sqlx::{FromRow, Row, SqlitePool};
+use log::{info, error};
 use async_trait::async_trait;
 use serde::{Deserialize, Serialize};
 use utoipa::ToSchema;
@@ -39,7 +39,9 @@ impl SqliteDomainController {
 
         let options = SqliteConnectOptions::new()
             .filename(db_path)
-            .create_if_missing(true);
+            .create_if_missing(true)
+            .journal_mode(SqliteJournalMode::Wal)
+            .synchronous(SqliteSynchronous::Normal);
 
         let pool = SqlitePool::connect_with(options).await?;
 
@@ -181,21 +183,25 @@ impl SqliteDomainController {
             .execute(&mut *tx)
             .await?;
 
+        let lines: Vec<String> = response.lines()
+            .map(|l| l.trim().trim_end_matches('.').to_string())
+            .filter(|l| !l.is_empty() && !l.starts_with('#'))
+            .collect();
+
         let mut count = 0;
-        for line in response.lines() {
-            let domain = line.trim().trim_end_matches('.');
-            if !domain.is_empty() && !domain.starts_with('#') {
-                sqlx::query("INSERT INTO list_domains (domain, list_id) VALUES (?, ?)")
-                    .bind(domain)
-                    .bind(list_id)
-                    .execute(&mut *tx)
-                    .await?;
-                count += 1;
-            }
+        for chunk in lines.chunks(1000) {
+            let mut query_builder: sqlx::QueryBuilder<sqlx::Sqlite> = sqlx::QueryBuilder::new("INSERT INTO list_domains (domain, list_id) ");
+            query_builder.push_values(chunk, |mut b, domain| {
+                b.push_bind(domain)
+                 .push_bind(list_id);
+            });
+            query_builder.build().execute(&mut *tx).await?;
+            count += chunk.len();
         }
+
         tx.commit().await?;
         info!("Successfully synced list {} in {:?}: {} entries", list_id, start.elapsed(), count);
-        metrics::gauge!("list_domain_count", "list_id" => list_id.to_string()).set(count);
+        metrics::gauge!("list_domain_count", "list_id" => list_id.to_string()).set(count as f64);
         Ok(())
     }
 }
@@ -204,82 +210,61 @@ impl SqliteDomainController {
 impl DomainController for SqliteDomainController {
     async fn should_intercept(&self, domain: &str) -> bool {
         let domain = domain.trim_end_matches('.');
-
-        // Check singular rules (exact match or subdomain match)
-        let result = sqlx::query("SELECT 1 FROM domain_rules WHERE domain = ?")
-            .bind(domain)
-            .fetch_optional(&self.pool)
-            .await;
-
-        match result {
-            Ok(Some(_)) => {
-                metrics::counter!("domain_hits", "domain" => domain.to_string()).increment(1);
-                return true;
-            },
-            Ok(None) => {},
-            Err(e) => {
-                error!("Error querying domain_rules for exact match: {}", e);
-            }
-        }
-
-        // Check list domains (exact match)
-        let list_result = sqlx::query_scalar::<_, i64>("SELECT list_id FROM list_domains WHERE domain = ?")
-            .bind(domain)
-            .fetch_optional(&self.pool)
-            .await;
-
-        match list_result {
-            Ok(Some(id)) => {
-                metrics::counter!("list_hits", "list_id" => id.to_string()).increment(1);
-                return true;
-            },
-            Ok(None) => {},
-            Err(e) => {
-                error!("Error querying list_domains for exact match: {}", e);
-            }
-        }
-
+        let mut check_domains = vec![domain.to_string()];
+        
         let parts: Vec<&str> = domain.split('.').collect();
         for i in 1..parts.len() {
-            let parent = parts[i..].join(".");
-            
-            // Check singular rule with include_subdomains=1
-            let parent_rule = sqlx::query_scalar::<_, String>("SELECT domain FROM domain_rules WHERE domain = ? AND include_subdomains = 1")
-                .bind(&parent)
-                .fetch_optional(&self.pool)
-                .await;
+            check_domains.push(parts[i..].join("."));
+        }
 
-            match parent_rule {
-                Ok(Some(rule_domain)) => {
-                    metrics::counter!("domain_hits", "domain" => rule_domain, "subdomain" => domain.to_string()).increment(1);
+        // 1. Check domain_rules
+        let mut qb = sqlx::QueryBuilder::<sqlx::Sqlite>::new("SELECT domain, include_subdomains FROM domain_rules WHERE domain IN (");
+        let mut separated = qb.separated(", ");
+        for d in &check_domains {
+            separated.push_bind(d);
+        }
+        separated.push_unseparated(")");
+        
+        let rules_result = qb.build().fetch_all(&self.pool).await;
+        if let Ok(rows) = rules_result {
+            for row in rows {
+                let rule_domain: String = row.get(0);
+                let include_subdomains: bool = row.get(1);
+                if rule_domain == domain || include_subdomains {
+                    metrics::counter!("domain_hits", "subdomain" => (rule_domain != domain).to_string(), "domain" => rule_domain).increment(1);
                     return true;
-                },
-                Ok(None) => {},
-                Err(e) => {
-                    debug!("Error querying domain_rules for parent {}: {}", parent, e);
                 }
             }
+        } else if let Err(e) = rules_result {
+            error!("Error querying domain_rules: {}", e);
+        }
 
-            // Check if it belongs to any list with include_subdomains=1
-            let parent_list = sqlx::query_scalar::<_, i64>(
-                "SELECT list_id FROM list_domains
-                 JOIN domain_lists ON list_domains.list_id = domain_lists.id 
-                 WHERE list_domains.domain = ? AND domain_lists.include_subdomains = 1"
-            )
-            .bind(&parent)
-            .fetch_optional(&self.pool)
-            .await;
+        // 2. Check list domains
+        let mut qb = sqlx::QueryBuilder::<sqlx::Sqlite>::new(
+            "SELECT list_domains.list_id, list_domains.domain, domain_lists.include_subdomains 
+             FROM list_domains 
+             JOIN domain_lists ON list_domains.list_id = domain_lists.id 
+             WHERE list_domains.domain IN ("
+        );
+        let mut separated = qb.separated(", ");
+        for d in &check_domains {
+            separated.push_bind(d);
+        }
+        separated.push_unseparated(")");
 
-            match parent_list {
-                Ok(Some(id)) => {
-                    metrics::counter!("list_hits", "list_id" => id.to_string(), "subdomain" => "true").increment(1);
+        let list_result = qb.build().fetch_all(&self.pool).await;
+        if let Ok(rows) = list_result {
+            for row in rows {
+                let list_id: i64 = row.get(0);
+                let hit_domain: String = row.get(1);
+                let include_subdomains: bool = row.get(2);
+                if hit_domain == domain || include_subdomains {
+                    metrics::counter!("list_hits", "list_id" => list_id.to_string(), "subdomain" => (hit_domain != domain).to_string()).increment(1);
                     return true;
-                },
-                Ok(None) => {},
-                Err(e) => {
-                    debug!("Error querying list_domains for parent {}: {}", parent, e);
                 }
             }
+        } else if let Err(e) = list_result {
+            error!("Error querying list_domains: {}", e);
         }
 
         false
