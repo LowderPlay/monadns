@@ -9,7 +9,7 @@ use nftables::batch::Batch;
 use nftables::expr;
 use nftables::expr::{Expression, Meta, MetaKey, NamedExpression, Payload, PayloadField, TcpOption};
 use nftables::stmt::{Mangle, Match, Operator, Statement, NAT};
-use rtnetlink::packet_route::rule::RuleAction;
+use rtnetlink::packet_route::rule::{RuleAction, RuleAttribute};
 use crate::route_controller::RouteController;
 
 const MAP_V4: &str = "fake_to_real_v4";
@@ -133,8 +133,10 @@ impl NetworkManager {
         self.add_chains(&mut batch, family);
 
         // MTU clamping to avoid fragmentation issues on tunnels
-        batch.add(NfListObject::Rule(self.get_mtu_clamp_rule("forward", 1280)));
-        batch.add(NfListObject::Rule(self.get_mtu_clamp_rule("output", 1280)));
+        if let Some(mss) = self.tcp_mss_clamp {
+            batch.add(NfListObject::Rule(self.get_mtu_clamp_rule("forward", mss)));
+            batch.add(NfListObject::Rule(self.get_mtu_clamp_rule("output", mss)));
+        }
 
         batch.add(NfListObject::Rule(self.get_steer_rule("prerouting", IpVersion::V4)));
         batch.add(NfListObject::Rule(self.get_steer_rule("prerouting", IpVersion::V6)));
@@ -229,6 +231,11 @@ impl NetworkManager {
             table: self.nft_table_name.clone().into(),
             chain: chain.into(),
             expr: vec![
+                Statement::Match(Match {
+                    left: Expression::Named(NamedExpression::Meta(Meta { key: MetaKey::Mark })),
+                    right: Expression::Number(self.fwmark),
+                    op: Operator::EQ,
+                }),
                 Statement::Match(Match {
                     left: Expression::Named(
                         NamedExpression::Payload(Payload::PayloadField(PayloadField {
@@ -339,7 +346,9 @@ impl RouteController for NetworkManager {
         for version in [IpVersion::V4, IpVersion::V6] {
             let mut rules = handle.rule().get(version).execute();
             while let Some(rule) = rules.try_next().await? {
-                if rule.header.table == self.table_id {
+                if rule.header.table == self.table_id &&
+                    rule.header.action == RuleAction::ToTable &&
+                    rule.attributes.contains(&RuleAttribute::FwMark(self.fwmark)) {
                     handle.rule().del(rule).execute().await?;
                 }
             }
