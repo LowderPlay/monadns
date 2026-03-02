@@ -319,6 +319,7 @@ impl RouteController for NetworkManager {
             ])].into(),
         }));
         nftables::helper::apply_ruleset(&batch.to_nftables())?;
+        metrics::counter!("mapped_ip_count", "family" => if real_ip.is_ipv4() { "ipv4" } else { "ipv6" }).increment(1);
         Ok(())
     }
     async fn cleanup(&self) -> anyhow::Result<()> {
