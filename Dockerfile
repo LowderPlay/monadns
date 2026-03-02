@@ -39,7 +39,10 @@ COPY --from=frontend-builder /app/frontend/dist frontend/dist
 COPY resolver/ resolver/
 
 # Build the resolver in release mode
-RUN cargo build --release --bin resolver
+RUN --mount=type=cache,target=/usr/local/cargo/registry \
+    --mount=type=cache,target=/app/target \
+    cargo build --release --bin resolver && \
+    cp target/release/resolver /app/monadns-resolver
 
 # Stage 3: Final runner image
 FROM debian:trixie-slim
@@ -53,7 +56,7 @@ RUN apt-get update && apt-get install -y \
     && rm -rf /var/lib/apt/lists/*
 
 # Copy the binary from the builder stage
-COPY --from=resolver-builder /app/target/release/resolver /usr/local/bin/monadns-resolver
+COPY --from=resolver-builder /app/monadns-resolver /usr/local/bin/monadns-resolver
 
 # Create directory for data (if needed, based on config)
 RUN mkdir -p /opt/monadns

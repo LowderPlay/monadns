@@ -9,6 +9,7 @@ use axum::{
     http::StatusCode,
 };
 use axum_embed::ServeEmbed;
+use log::error;
 use utoipa::OpenApi;
 use utoipa_axum::router::OpenApiRouter;
 use utoipa_swagger_ui::SwaggerUi;
@@ -209,9 +210,17 @@ async fn add_domain_list(
     State(app): State<Arc<App>>,
     Json(list): Json<DomainList>,
 ) -> Result<Json<String>, String> {
-    app.domain_controller().add_domain_list(list).await
-        .map(|id| Json(format!("Domain list added with id {}", id)))
-        .map_err(|e| e.to_string())
+    let list_id = app.domain_controller().add_domain_list(list).await
+        .map_err(|e| e.to_string())?;
+
+    tokio::spawn(async move {
+        // Update after added
+        if let Err(e) = app.domain_controller().sync_list_by_id(list_id).await {
+            error!("Failed to initial sync for list {}: {}", list_id, e);
+        }
+    });
+
+    Ok(Json(format!("Domain list added with id {}", list_id)))
 }
 
 /// Remove a domain list
@@ -251,7 +260,11 @@ pub async fn sync_domain_list(
     State(app): State<Arc<App>>,
     Path(id): Path<i64>,
 ) -> Result<Json<String>, String> {
-    app.domain_controller().sync_list_by_id(id).await
-        .map(|_| Json("Domain list synced".to_string()))
-        .map_err(|e| e.to_string())
+    tokio::spawn(async move {
+        if let Err(e) = app.domain_controller().sync_list_by_id(id).await {
+            error!("Failed to sync list {}: {}", id, e);
+        }
+    });
+
+    Ok(Json("Domain list sync started".to_string()))
 }

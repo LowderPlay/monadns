@@ -7,6 +7,7 @@ use async_trait::async_trait;
 use serde::{Deserialize, Serialize};
 use utoipa::ToSchema;
 use chrono::{DateTime, Utc};
+use tokio::time::Instant;
 use crate::domain_controller::DomainController;
 
 #[derive(Debug, Serialize, Deserialize, FromRow, ToSchema)]
@@ -102,11 +103,6 @@ impl SqliteDomainController {
         .await?;
         let id = res.last_insert_rowid();
         
-        // Update after added
-        if let Err(e) = self.sync_list_by_id(id).await {
-            error!("Failed to initial sync for list {}: {}", id, e);
-        }
-        
         Ok(id)
     }
 
@@ -134,7 +130,7 @@ impl SqliteDomainController {
 
         let client = reqwest::Client::new();
         self.fetch_and_cache_list(&client, &list).await?;
-        
+
         sqlx::query("UPDATE domain_lists SET last_updated = ? WHERE id = ?")
             .bind(Utc::now())
             .bind(id)
@@ -156,7 +152,6 @@ impl SqliteDomainController {
             };
 
             if should_update {
-                debug!("Syncing domain list {}", list.id.unwrap());
                 match self.fetch_and_cache_list(&client, &list).await {
                     Ok(_) => {
                         sqlx::query("UPDATE domain_lists SET last_updated = ? WHERE id = ?")
@@ -164,7 +159,6 @@ impl SqliteDomainController {
                             .bind(list.id)
                             .execute(&self.pool)
                             .await?;
-                        info!("Successfully synced list {}", list.id.unwrap());
                     }
                     Err(e) => {
                         error!("Failed to sync list {}: {}", list.url, e);
@@ -177,6 +171,8 @@ impl SqliteDomainController {
 
     async fn fetch_and_cache_list(&self, client: &reqwest::Client, list: &DomainList) -> anyhow::Result<()> {
         let list_id = list.id.expect("List must have an ID");
+        info!("Syncing domain list {}", list.id.unwrap());
+        let start = Instant::now();
         let response = client.get(&list.url).send().await?.text().await?;
         
         let mut tx = self.pool.begin().await?;
@@ -185,6 +181,7 @@ impl SqliteDomainController {
             .execute(&mut *tx)
             .await?;
 
+        let mut count = 0;
         for line in response.lines() {
             let domain = line.trim().trim_end_matches('.');
             if !domain.is_empty() && !domain.starts_with('#') {
@@ -193,9 +190,12 @@ impl SqliteDomainController {
                     .bind(list_id)
                     .execute(&mut *tx)
                     .await?;
+                count += 1;
             }
         }
         tx.commit().await?;
+        info!("Successfully synced list {} in {:?}: {} entries", list_id, start.elapsed(), count);
+        metrics::gauge!("list_domain_count", "list_id" => list_id.to_string()).set(count);
         Ok(())
     }
 }
@@ -212,24 +212,30 @@ impl DomainController for SqliteDomainController {
             .await;
 
         match result {
-            Ok(Some(_)) => return true,
+            Ok(Some(_)) => {
+                metrics::counter!("domain_hits", "domain" => domain.to_string()).increment(1);
+                return true;
+            },
             Ok(None) => {},
             Err(e) => {
-                debug!("Error querying domain_rules for exact match: {}", e);
+                error!("Error querying domain_rules for exact match: {}", e);
             }
         }
 
         // Check list domains (exact match)
-        let list_result = sqlx::query("SELECT 1 FROM list_domains WHERE domain = ?")
+        let list_result = sqlx::query_scalar::<_, i64>("SELECT list_id FROM list_domains WHERE domain = ?")
             .bind(domain)
             .fetch_optional(&self.pool)
             .await;
 
         match list_result {
-            Ok(Some(_)) => return true,
+            Ok(Some(id)) => {
+                metrics::counter!("list_hits", "list_id" => id.to_string()).increment(1);
+                return true;
+            },
             Ok(None) => {},
             Err(e) => {
-                debug!("Error querying list_domains for exact match: {}", e);
+                error!("Error querying list_domains for exact match: {}", e);
             }
         }
 
@@ -238,13 +244,16 @@ impl DomainController for SqliteDomainController {
             let parent = parts[i..].join(".");
             
             // Check singular rule with include_subdomains=1
-            let parent_rule = sqlx::query("SELECT 1 FROM domain_rules WHERE domain = ? AND include_subdomains = 1")
+            let parent_rule = sqlx::query_scalar::<_, String>("SELECT domain FROM domain_rules WHERE domain = ? AND include_subdomains = 1")
                 .bind(&parent)
                 .fetch_optional(&self.pool)
                 .await;
 
             match parent_rule {
-                Ok(Some(_)) => return true,
+                Ok(Some(rule_domain)) => {
+                    metrics::counter!("domain_hits", "domain" => rule_domain, "subdomain" => domain.to_string()).increment(1);
+                    return true;
+                },
                 Ok(None) => {},
                 Err(e) => {
                     debug!("Error querying domain_rules for parent {}: {}", parent, e);
@@ -252,8 +261,8 @@ impl DomainController for SqliteDomainController {
             }
 
             // Check if it belongs to any list with include_subdomains=1
-            let parent_list = sqlx::query(
-                "SELECT 1 FROM list_domains 
+            let parent_list = sqlx::query_scalar::<_, i64>(
+                "SELECT list_id FROM list_domains
                  JOIN domain_lists ON list_domains.list_id = domain_lists.id 
                  WHERE list_domains.domain = ? AND domain_lists.include_subdomains = 1"
             )
@@ -262,7 +271,10 @@ impl DomainController for SqliteDomainController {
             .await;
 
             match parent_list {
-                Ok(Some(_)) => return true,
+                Ok(Some(id)) => {
+                    metrics::counter!("list_hits", "list_id" => id.to_string(), "subdomain" => "true").increment(1);
+                    return true;
+                },
                 Ok(None) => {},
                 Err(e) => {
                     debug!("Error querying list_domains for parent {}: {}", parent, e);
