@@ -17,6 +17,8 @@ export type UpstreamResolverConfig =
 export interface Config {
   table_id: number;
   iface: string;
+  policy_routing_fwmark: number;
+  policy_routing_priority: number;
   tcp_mss_clamp: number | null;
   ipv4_snat: string | null;
   ipv6_snat: string | null;
@@ -28,6 +30,8 @@ export interface Config {
 export interface PatchConfig {
   table_id?: number;
   iface?: string;
+  policy_routing_fwmark?: number;
+  policy_routing_priority?: number;
   tcp_mss_clamp?: number | null;
   ipv4_snat?: string | null;
   ipv6_snat?: string | null;
