@@ -20,6 +20,14 @@
   async function save() {
     if (!config) return;
 
+    if(config.ipv4_snat?.trim() === "") {
+      config.ipv4_snat = null;
+    }
+
+    if(config.ipv6_snat?.trim() === "") {
+      config.ipv6_snat = null;
+    }
+
     if (config.upstream_resolver.type === 'Custom') {
       if (config.upstream_resolver.nameservers.length === 0) {
         toast.error('At least one nameserver is required for Custom configuration');
@@ -101,9 +109,36 @@
 
       <!-- TCP MSS Clamp -->
       <div class="flex flex-col gap-1">
-        <label for="tcp_mss_clamp" class="text-sm font-bold text-zinc-300">TCP MSS Clamp</label>
+        <label for="tcp_mss_clamp_toggle" class="text-sm font-bold text-zinc-300 cursor-pointer">TCP MSS Clamp</label>
         <p class="text-xs text-zinc-500 mb-1">Clamps TCP Maximum Segment Size to prevent MTU issues.</p>
-        <input id="tcp_mss_clamp" type="number" bind:value={config.tcp_mss_clamp} class="bg-zinc-900 border border-zinc-700 p-2 focus:outline-none focus:border-zinc-500" />
+        <div class="flex items-center gap-2">
+          <input
+                  type="checkbox"
+                  id="tcp_mss_clamp_toggle"
+                  checked={config.tcp_mss_clamp !== null}
+                  onchange={(e) => {
+              if (config) {
+                if (e.currentTarget.checked) {
+                  config.tcp_mss_clamp = 1360;
+                } else {
+                  config.tcp_mss_clamp = null;
+                }
+              }
+            }}
+                  class="w-4 h-4 border-zinc-700 bg-zinc-950 accent-white cursor-pointer"
+          />
+          <input id="tcp_mss_clamp" type="number"
+                 disabled={config.tcp_mss_clamp === null}
+                 placeholder="Disabled"
+                 bind:value={config.tcp_mss_clamp}
+                 class="w-full bg-zinc-900 border border-zinc-700 p-2 focus:outline-none focus:border-zinc-500" />
+          <!--{#if config.tcp_mss_clamp !== null}-->
+          <!--  -->
+          <!--{:else}-->
+          <!--  <p class="p-2">Disabled</p>-->
+          <!--{/if}-->
+        </div>
+
       </div>
 
       <!-- Upstream Resolver -->

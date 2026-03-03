@@ -16,7 +16,7 @@ services:
     #  - MONADNS_HTTP_BIND=[::]:8080
 
     # Uncomment to enable Prometheus exporter:
-    #  - MONADNS_METRICS_BIND=[::]:9090
+      - MONADNS_METRICS_BIND=[::]:9000
       - RUST_LOG=info
     volumes:
       - data:/opt/monadns
