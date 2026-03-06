@@ -89,9 +89,37 @@
 </script>
 
 <div class="space-y-6">
-  <h2 class="text-xl font-bold border-b border-zinc-800 pb-2">Main configuration</h2>
 
   {#if config}
+    <h2 class="text-xl font-bold border-b border-zinc-800 pb-2">DNS</h2>
+    <div class="grid grid-cols-1 md:grid-cols-2 gap-x-8 gap-y-6">
+
+      <!-- Upstream Resolver -->
+      <div class="flex flex-col gap-1">
+        <label for="upstream" class="text-sm font-bold text-zinc-300">Upstream DNS</label>
+        <p class="text-xs text-zinc-500 mb-1">DNS provider used for resolving queries.</p>
+        <select id="upstream" value={config.upstream_resolver.type} onchange={handleResolverChange} class="bg-zinc-900 border border-zinc-700 p-2 focus:outline-none focus:border-zinc-500">
+          {#each Object.entries(resolverPresets) as [r, name]}
+            <option value={r}>{name}</option>
+          {/each}
+        </select>
+      </div>
+
+      <!-- IPv4 Subnet -->
+      <div class="flex flex-col gap-1">
+        <label for="ipv4_subnet" class="text-sm font-bold text-zinc-300">Fake IPv4 Subnet</label>
+        <p class="text-xs text-zinc-500 mb-1">Subnet used for mapping intercepted domains to fake IPv4s.</p>
+        <input id="ipv4_subnet" bind:value={config.ipv4_subnet} class="bg-zinc-900 border border-zinc-700 p-2 focus:outline-none focus:border-zinc-500" />
+      </div>
+
+      <!-- IPv6 Subnet -->
+      <div class="flex flex-col gap-1">
+        <label for="ipv6_subnet" class="text-sm font-bold text-zinc-300">Fake IPv6 Subnet</label>
+        <p class="text-xs text-zinc-500 mb-1">Subnet used for mapping intercepted domains to fake IPv6s.</p>
+        <input id="ipv6_subnet" bind:value={config.ipv6_subnet} class="bg-zinc-900 border border-zinc-700 p-2 focus:outline-none focus:border-zinc-500" />
+      </div>
+    </div>
+    <h2 class="text-xl font-bold border-b border-zinc-800 pb-2">Routing</h2>
     <div class="grid grid-cols-1 md:grid-cols-2 gap-x-8 gap-y-6">
       <!-- Interface -->
       <div class="flex flex-col gap-1">
@@ -139,31 +167,6 @@
           <!--{/if}-->
         </div>
 
-      </div>
-
-      <!-- Upstream Resolver -->
-      <div class="flex flex-col gap-1">
-        <label for="upstream" class="text-sm font-bold text-zinc-300">Upstream DNS</label>
-        <p class="text-xs text-zinc-500 mb-1">DNS provider used for resolving queries.</p>
-        <select id="upstream" value={config.upstream_resolver.type} onchange={handleResolverChange} class="bg-zinc-900 border border-zinc-700 p-2 focus:outline-none focus:border-zinc-500">
-          {#each Object.entries(resolverPresets) as [r, name]}
-            <option value={r}>{name}</option>
-          {/each}
-        </select>
-      </div>
-
-      <!-- IPv4 Subnet -->
-      <div class="flex flex-col gap-1">
-        <label for="ipv4_subnet" class="text-sm font-bold text-zinc-300">Fake IPv4 Subnet</label>
-        <p class="text-xs text-zinc-500 mb-1">Subnet used for mapping intercepted domains to fake IPv4s.</p>
-        <input id="ipv4_subnet" bind:value={config.ipv4_subnet} class="bg-zinc-900 border border-zinc-700 p-2 focus:outline-none focus:border-zinc-500" />
-      </div>
-
-      <!-- IPv6 Subnet -->
-      <div class="flex flex-col gap-1">
-        <label for="ipv6_subnet" class="text-sm font-bold text-zinc-300">Fake IPv6 Subnet</label>
-        <p class="text-xs text-zinc-500 mb-1">Subnet used for mapping intercepted domains to fake IPv6s.</p>
-        <input id="ipv6_subnet" bind:value={config.ipv6_subnet} class="bg-zinc-900 border border-zinc-700 p-2 focus:outline-none focus:border-zinc-500" />
       </div>
 
       <!-- IPv4 SNAT -->

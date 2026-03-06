@@ -8,6 +8,7 @@ mod api;
 pub mod error;
 
 use std::sync::Arc;
+use env_logger::Env;
 use hickory_server::ServerFuture;
 use log::info;
 use tokio::net::UdpSocket;
@@ -16,8 +17,7 @@ use crate::config::Config;
 
 #[tokio::main]
 async fn main() -> anyhow::Result<()> {
-    env_logger::builder()
-        .filter_level(log::LevelFilter::Info)
+    env_logger::Builder::from_env(Env::default().default_filter_or("info"))
         .init();
     
     let config = Config::load()?;
