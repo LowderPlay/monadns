@@ -43,10 +43,26 @@ impl Default for Config {
 pub struct PatchConfig {
     pub table_id: Option<u8>,
     pub iface: Option<String>,
+    #[schema(value_type = Option<Option<u32>>)]
+    #[serde(
+        default,
+        skip_serializing_if = "Option::is_none",
+        with = "::serde_with::rust::double_option",
+    )]
     pub tcp_mss_clamp: Option<Option<u32>>,
     #[schema(value_type = Option<Option<String>>)]
+    #[serde(
+        default,
+        skip_serializing_if = "Option::is_none",
+        with = "::serde_with::rust::double_option",
+    )]
     pub ipv4_snat: Option<Option<IpAddr>>,
     #[schema(value_type = Option<Option<String>>)]
+    #[serde(
+        default,
+        skip_serializing_if = "Option::is_none",
+        with = "::serde_with::rust::double_option",
+    )]
     pub ipv6_snat: Option<Option<IpAddr>>,
     #[schema(value_type = Option<String>)]
     pub ipv4_subnet: Option<Ipv4Net>,

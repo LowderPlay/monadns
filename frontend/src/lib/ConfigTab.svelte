@@ -20,6 +20,14 @@
   async function save() {
     if (!config) return;
 
+    if(config.ipv4_snat?.trim() === "") {
+      config.ipv4_snat = null;
+    }
+
+    if(config.ipv6_snat?.trim() === "") {
+      config.ipv6_snat = null;
+    }
+
     if (config.upstream_resolver.type === 'Custom') {
       if (config.upstream_resolver.nameservers.length === 0) {
         toast.error('At least one nameserver is required for Custom configuration');
@@ -81,30 +89,10 @@
 </script>
 
 <div class="space-y-6">
-  <h2 class="text-xl font-bold border-b border-zinc-800 pb-2">Main configuration</h2>
 
   {#if config}
+    <h2 class="text-xl font-bold border-b border-zinc-800 pb-2">DNS</h2>
     <div class="grid grid-cols-1 md:grid-cols-2 gap-x-8 gap-y-6">
-      <!-- Interface -->
-      <div class="flex flex-col gap-1">
-        <label for="iface" class="text-sm font-bold text-zinc-300">Network Interface</label>
-        <p class="text-xs text-zinc-500 mb-1">The system interface which the outgoing traffic is routed to (e.g., wg0, eth0).</p>
-        <input id="iface" bind:value={config.iface} class="bg-zinc-900 border border-zinc-700 p-2 focus:outline-none focus:border-zinc-500" />
-      </div>
-
-      <!-- Table ID -->
-      <div class="flex flex-col gap-1">
-        <label for="table_id" class="text-sm font-bold text-zinc-300">Routing Table ID</label>
-        <p class="text-xs text-zinc-500 mb-1">Linux routing table ID where steered packets are routed (by default no routes are added, so default will be used).</p>
-        <input id="table_id" type="number" bind:value={config.table_id} class="bg-zinc-900 border border-zinc-700 p-2 focus:outline-none focus:border-zinc-500" />
-      </div>
-
-      <!-- TCP MSS Clamp -->
-      <div class="flex flex-col gap-1">
-        <label for="tcp_mss_clamp" class="text-sm font-bold text-zinc-300">TCP MSS Clamp</label>
-        <p class="text-xs text-zinc-500 mb-1">Clamps TCP Maximum Segment Size to prevent MTU issues.</p>
-        <input id="tcp_mss_clamp" type="number" bind:value={config.tcp_mss_clamp} class="bg-zinc-900 border border-zinc-700 p-2 focus:outline-none focus:border-zinc-500" />
-      </div>
 
       <!-- Upstream Resolver -->
       <div class="flex flex-col gap-1">
@@ -129,6 +117,56 @@
         <label for="ipv6_subnet" class="text-sm font-bold text-zinc-300">Fake IPv6 Subnet</label>
         <p class="text-xs text-zinc-500 mb-1">Subnet used for mapping intercepted domains to fake IPv6s.</p>
         <input id="ipv6_subnet" bind:value={config.ipv6_subnet} class="bg-zinc-900 border border-zinc-700 p-2 focus:outline-none focus:border-zinc-500" />
+      </div>
+    </div>
+    <h2 class="text-xl font-bold border-b border-zinc-800 pb-2">Routing</h2>
+    <div class="grid grid-cols-1 md:grid-cols-2 gap-x-8 gap-y-6">
+      <!-- Interface -->
+      <div class="flex flex-col gap-1">
+        <label for="iface" class="text-sm font-bold text-zinc-300">Network Interface</label>
+        <p class="text-xs text-zinc-500 mb-1">The system interface which the outgoing traffic is routed to (e.g., wg0, eth0).</p>
+        <input id="iface" bind:value={config.iface} class="bg-zinc-900 border border-zinc-700 p-2 focus:outline-none focus:border-zinc-500" />
+      </div>
+
+      <!-- Table ID -->
+      <div class="flex flex-col gap-1">
+        <label for="table_id" class="text-sm font-bold text-zinc-300">Routing Table ID</label>
+        <p class="text-xs text-zinc-500 mb-1">Linux routing table ID where steered packets are routed (by default no routes are added, so default will be used).</p>
+        <input id="table_id" type="number" bind:value={config.table_id} class="bg-zinc-900 border border-zinc-700 p-2 focus:outline-none focus:border-zinc-500" />
+      </div>
+
+      <!-- TCP MSS Clamp -->
+      <div class="flex flex-col gap-1">
+        <label for="tcp_mss_clamp_toggle" class="text-sm font-bold text-zinc-300 cursor-pointer">TCP MSS Clamp</label>
+        <p class="text-xs text-zinc-500 mb-1">Clamps TCP Maximum Segment Size to prevent MTU issues.</p>
+        <div class="flex items-center gap-2">
+          <input
+                  type="checkbox"
+                  id="tcp_mss_clamp_toggle"
+                  checked={config.tcp_mss_clamp !== null}
+                  onchange={(e) => {
+              if (config) {
+                if (e.currentTarget.checked) {
+                  config.tcp_mss_clamp = 1360;
+                } else {
+                  config.tcp_mss_clamp = null;
+                }
+              }
+            }}
+                  class="w-4 h-4 border-zinc-700 bg-zinc-950 accent-white cursor-pointer"
+          />
+          <input id="tcp_mss_clamp" type="number"
+                 disabled={config.tcp_mss_clamp === null}
+                 placeholder="Disabled"
+                 bind:value={config.tcp_mss_clamp}
+                 class="w-full bg-zinc-900 border border-zinc-700 p-2 focus:outline-none focus:border-zinc-500" />
+          <!--{#if config.tcp_mss_clamp !== null}-->
+          <!--  -->
+          <!--{:else}-->
+          <!--  <p class="p-2">Disabled</p>-->
+          <!--{/if}-->
+        </div>
+
       </div>
 
       <!-- IPv4 SNAT -->

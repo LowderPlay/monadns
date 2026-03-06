@@ -36,7 +36,7 @@ impl NetworkManager {
         Self {
             table_id,
             iface: iface.to_string(),
-            nft_table_name: "dns_steering".to_string(),
+            nft_table_name: "monadns_steering".to_string(),
             fwmark: 1,
             tcp_mss_clamp: None,
             ipv4_snat: None,
@@ -138,10 +138,12 @@ impl NetworkManager {
             batch.add(NfListObject::Rule(self.get_mtu_clamp_rule("output", mss)));
         }
 
-        batch.add(NfListObject::Rule(self.get_steer_rule("prerouting", IpVersion::V4)));
-        batch.add(NfListObject::Rule(self.get_steer_rule("prerouting", IpVersion::V6)));
-        batch.add(NfListObject::Rule(self.get_steer_rule("output", IpVersion::V4)));
-        batch.add(NfListObject::Rule(self.get_steer_rule("output", IpVersion::V6)));
+        for ip in [IpVersion::V4, IpVersion::V6] {
+            batch.add(NfListObject::Rule(self.get_mark_rule("mangle_prerouting", ip.clone())));
+            batch.add(NfListObject::Rule(self.get_mark_rule("mangle_output", ip.clone())));
+            batch.add(NfListObject::Rule(self.get_dnat_rule("prerouting", ip.clone())));
+            batch.add(NfListObject::Rule(self.get_dnat_rule("output", ip)));
+        }
 
         self.add_postrouting_rules(&mut batch, family);
 
@@ -152,6 +154,8 @@ impl NetworkManager {
 
     fn add_chains(&self, batch: &mut Batch, family: NfFamily) {
         let chains = [
+            (Some(NfChainType::Filter), Some(NfHook::Prerouting), "mangle_prerouting", -150, None),
+            (Some(NfChainType::Filter), Some(NfHook::Output), "mangle_output", -150, None),
             (Some(NfChainType::NAT), Some(NfHook::Prerouting), "prerouting", -100, None),
             (Some(NfChainType::NAT), Some(NfHook::Output), "output", -100, None),
             (Some(NfChainType::NAT), Some(NfHook::Postrouting), "postrouting", 100, None),
@@ -185,12 +189,17 @@ impl NetworkManager {
         });
 
         let stacks = [
-            (self.ipv4_snat, "ip"),
-            (self.ipv6_snat, "ip6")
+            (self.ipv4_snat, "ip", "ipv4"),
+            (self.ipv6_snat, "ip6", "ipv6")
         ];
 
-        for (snat, protocol) in stacks {
+        for (snat, protocol, nfproto) in stacks {
             let mut rules = vec![
+                Statement::Match(Match {
+                    left: Expression::Named(NamedExpression::Meta(Meta { key: MetaKey::Nfproto })),
+                    right: Expression::String(nfproto.into()),
+                    op: Operator::EQ,
+                }),
                 fwmark_match.clone(),
                 iface_match.clone()
             ];
@@ -253,10 +262,22 @@ impl NetworkManager {
         }
     }
 
-    fn get_steer_rule(&self, chain: &'static str, version: IpVersion) -> Rule<'_> {
-        let (protocol, field, map_name) = match version {
-            IpVersion::V4 => ("ip", "daddr", MAP_V4),
-            IpVersion::V6 => ("ip6", "daddr", MAP_V6),
+    fn dest_match_statement<'a>(protocol: &'a str, map_name: &'a str) -> Statement<'a> {
+        Statement::Match(Match {
+            left: Expression::Named(NamedExpression::Payload(
+                Payload::PayloadField(PayloadField {
+                    protocol: protocol.into(),
+                    field: "daddr".into()
+                }))),
+            right: Expression::String(format!("@{}", map_name).into()),
+            op: Operator::EQ,
+        })
+    }
+
+    fn get_mark_rule(&self, chain: &'static str, version: IpVersion) -> Rule<'_> {
+        let (protocol, map_name) = match version {
+            IpVersion::V4 => ("ip", MAP_V4),
+            IpVersion::V6 => ("ip6", MAP_V6),
         };
 
         Rule {
@@ -264,25 +285,34 @@ impl NetworkManager {
             table: self.nft_table_name.clone().into(),
             chain: chain.into(),
             expr: vec![
-                Statement::Match(Match {
-                    left: Expression::Named(NamedExpression::Payload(
-                        Payload::PayloadField(PayloadField {
-                            protocol: protocol.into(),
-                            field: field.into()
-                        }))),
-                    right: Expression::String(format!("@{}", map_name).into()),
-                    op: Operator::EQ,
-                }),
+                Self::dest_match_statement(protocol, map_name),
                 Statement::Mangle(Mangle {
                     key: Expression::Named(NamedExpression::Meta(Meta { key: MetaKey::Mark })),
                     value: Expression::Number(self.fwmark),
                 }),
+            ].into(),
+            ..Default::default()
+        }
+    }
+
+    fn get_dnat_rule(&self, chain: &'static str, version: IpVersion) -> Rule<'_> {
+        let (protocol, map_name) = match version {
+            IpVersion::V4 => ("ip", MAP_V4),
+            IpVersion::V6 => ("ip6", MAP_V6),
+        };
+
+        Rule {
+            family: NfFamily::INet,
+            table: self.nft_table_name.clone().into(),
+            chain: chain.into(),
+            expr: vec![
+                Self::dest_match_statement(protocol, map_name),
                 Statement::DNAT(Some(NAT {
                     addr: Some(Expression::Named(NamedExpression::Map(Box::new(expr::Map {
                         key: Expression::Named(NamedExpression::Payload(
                             Payload::PayloadField(PayloadField {
                                 protocol: protocol.into(),
-                                field: field.into()
+                                field: "daddr".into()
                             }))),
                         data: Expression::String(format!("@{}", map_name).into()),
                     })))),

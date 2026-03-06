@@ -34,3 +34,4 @@ frontend = { path = "../frontend" }
 anyhow = "1.0.102"
 metrics = "0.24"
 metrics-exporter-prometheus = "0.18"
+serde_with = "3.17.0"
