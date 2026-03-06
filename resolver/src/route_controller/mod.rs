@@ -7,6 +7,7 @@ use async_trait::async_trait;
 pub trait RouteController: Send + Sync {
     async fn add_mapping(&self, fake_ip: IpAddr, real_ip: IpAddr) -> anyhow::Result<()>;
     async fn cleanup(&self) -> anyhow::Result<()>;
+    async fn fetch_metrics(&self) -> anyhow::Result<()>;
 }
 
 #[derive(Clone)]
@@ -21,6 +22,10 @@ impl RouteController for DummyRouteController {
     }
 
     async fn cleanup(&self) -> anyhow::Result<()> {
+        Ok(())
+    }
+
+    async fn fetch_metrics(&self) -> anyhow::Result<()> {
         Ok(())
     }
 }

@@ -9,6 +9,7 @@ use crate::domain_controller::sqlite::SqliteDomainController;
 use crate::fake_ip::IpManager;
 use crate::handler::{FakeIpHandler, HandlerState};
 use crate::route_controller::nftables::NetworkManager;
+use log::{error, info};
 use crate::route_controller::RouteController;
 
 pub struct App {
@@ -23,15 +24,33 @@ impl App {
         domain_controller.clone().start_sync_worker();
         let state = Self::create_state(&config, domain_controller.clone()).await?;
         let handler = FakeIpHandler::new(state);
-        
-        Ok(Self { 
+
+        let app = Self { 
             handler,
             config: ArcSwap::from(Arc::new(config)),
             domain_controller,
-        })
+        };
+        app.start_metrics_worker();
+        Ok(app)
+    }
+
+    fn start_metrics_worker(&self) {
+        let handler = self.handler.clone();
+        info!("starting nftables metrics worker");
+        tokio::spawn(async move {
+            let mut interval = tokio::time::interval(std::time::Duration::from_secs(5));
+            loop {
+                interval.tick().await;
+                let state = handler.state.load();
+                if let Err(e) = state.route_controller.fetch_metrics().await {
+                    error!("failed to fetch nft metrics: {}", e);
+                }
+            }
+        });
     }
 
     pub fn handler(&self) -> FakeIpHandler {
+
         self.handler.clone()
     }
 
