@@ -453,9 +453,31 @@ impl RouteController for NetworkManager {
         Ok(())
     }
     async fn fetch_metrics(&self) -> anyhow::Result<()> {
-        let ruleset = nftables::helper::get_current_ruleset()?;
-        for obj in ruleset.objects.iter() {
-            if let NfObject::ListObject(NfListObject::Counter(c)) = obj {
+        use serde::Deserialize;
+
+        #[derive(Deserialize)]
+        struct NftOutput {
+            nftables: Vec<std::collections::HashMap<String, serde_json::Value>>,
+        }
+
+        #[derive(Deserialize)]
+        struct CounterData {
+            table: String,
+            name: String,
+            packets: u64,
+            bytes: u64,
+        }
+
+        let raw_json = nftables::helper::get_current_ruleset_raw(
+            nftables::helper::DEFAULT_NFT,
+            &["list", "counters"]
+        )?;
+
+        let output: NftOutput = serde_json::from_str(&raw_json)?;
+
+        for obj in output.nftables {
+            if let Some(counter_val) = obj.get("counter") {
+                let c: CounterData = serde_json::from_value(counter_val.clone())?;
                 if c.table == self.nft_table_name {
                     let (family, direction) = if c.name.contains("v4") {
                         ("ipv4", if c.name.contains("rx") { "rx" } else { "tx" })
@@ -463,12 +485,8 @@ impl RouteController for NetworkManager {
                         ("ipv6", if c.name.contains("rx") { "rx" } else { "tx" })
                     };
 
-                    if let Some(p) = c.packets {
-                        metrics::gauge!("intercepted_packets", "family" => family, "direction" => direction).set(p as f64);
-                    }
-                    if let Some(b) = c.bytes {
-                        metrics::gauge!("intercepted_bytes", "family" => family, "direction" => direction).set(b as f64);
-                    }
+                    metrics::gauge!("intercepted_packets", "family" => family, "direction" => direction).set(c.packets as f64);
+                    metrics::gauge!("intercepted_bytes", "family" => family, "direction" => direction).set(c.bytes as f64);
                 }
             }
         }
