@@ -14,6 +14,7 @@ use crate::domain_controller::DomainController;
 pub struct DomainRule {
     pub domain: String,
     pub include_subdomains: bool,
+    pub interface: Option<String>,
 }
 
 #[derive(Debug, Serialize, Deserialize, FromRow, ToSchema)]
@@ -23,6 +24,7 @@ pub struct DomainList {
     pub update_interval_seconds: i64,
     pub include_subdomains: bool,
     pub last_updated: Option<DateTime<Utc>>,
+    pub interface: Option<String>,
 }
 
 pub struct SqliteDomainController {
@@ -66,13 +68,14 @@ impl SqliteDomainController {
         });
     }
 
-    pub async fn add_rule(&self, domain: &str, include_subdomains: bool) -> anyhow::Result<()> {
+    pub async fn add_rule(&self, domain: &str, include_subdomains: bool, interface: Option<String>) -> anyhow::Result<()> {
         let domain = domain.trim_end_matches('.');
         sqlx::query(
-            "INSERT OR REPLACE INTO domain_rules (domain, include_subdomains) VALUES (?, ?)"
+            "INSERT OR REPLACE INTO domain_rules (domain, include_subdomains, interface) VALUES (?, ?, ?)"
         )
         .bind(domain)
         .bind(include_subdomains)
+        .bind(interface)
         .execute(&self.pool)
         .await?;
         Ok(())
@@ -88,7 +91,7 @@ impl SqliteDomainController {
     }
 
     pub async fn list_rules(&self) -> anyhow::Result<Vec<DomainRule>> {
-        let rules = sqlx::query_as::<_, DomainRule>("SELECT domain, include_subdomains FROM domain_rules")
+        let rules = sqlx::query_as::<_, DomainRule>("SELECT domain, include_subdomains, interface FROM domain_rules")
             .fetch_all(&self.pool)
             .await?;
         Ok(rules)
@@ -96,11 +99,12 @@ impl SqliteDomainController {
 
     pub async fn add_domain_list(&self, list: DomainList) -> anyhow::Result<i64> {
         let res = sqlx::query(
-            "INSERT INTO domain_lists (url, update_interval_seconds, include_subdomains) VALUES (?, ?, ?)"
+            "INSERT INTO domain_lists (url, update_interval_seconds, include_subdomains, interface) VALUES (?, ?, ?, ?)"
         )
         .bind(&list.url)
         .bind(list.update_interval_seconds)
         .bind(list.include_subdomains)
+        .bind(list.interface)
         .execute(&self.pool)
         .await?;
         let id = res.last_insert_rowid();
@@ -117,7 +121,7 @@ impl SqliteDomainController {
     }
 
     pub async fn list_domain_lists(&self) -> anyhow::Result<Vec<DomainList>> {
-        let lists = sqlx::query_as::<_, DomainList>("SELECT id, url, update_interval_seconds, include_subdomains, last_updated FROM domain_lists")
+        let lists = sqlx::query_as::<_, DomainList>("SELECT id, url, update_interval_seconds, include_subdomains, last_updated, interface FROM domain_lists")
             .fetch_all(&self.pool)
             .await?;
         Ok(lists)
@@ -208,7 +212,7 @@ impl SqliteDomainController {
 
 #[async_trait]
 impl DomainController for SqliteDomainController {
-    async fn should_intercept(&self, domain: &str) -> bool {
+    async fn should_intercept(&self, domain: &str) -> Option<String> {
         let domain = domain.trim_end_matches('.');
         let mut check_domains = vec![domain.to_string()];
         
@@ -218,7 +222,7 @@ impl DomainController for SqliteDomainController {
         }
 
         // 1. Check domain_rules
-        let mut qb = sqlx::QueryBuilder::<sqlx::Sqlite>::new("SELECT domain, include_subdomains FROM domain_rules WHERE domain IN (");
+        let mut qb = sqlx::QueryBuilder::<sqlx::Sqlite>::new("SELECT domain, include_subdomains, interface FROM domain_rules WHERE domain IN (");
         let mut separated = qb.separated(", ");
         for d in &check_domains {
             separated.push_bind(d);
@@ -230,9 +234,14 @@ impl DomainController for SqliteDomainController {
             for row in rows {
                 let rule_domain: String = row.get(0);
                 let include_subdomains: bool = row.get(1);
+                let interface: Option<String> = row.get(2);
                 if rule_domain == domain || include_subdomains {
-                    metrics::counter!("domain_hits", "subdomain" => (rule_domain != domain).to_string(), "domain" => rule_domain).increment(1);
-                    return true;
+                    let interface = interface.unwrap_or_else(|| "default".to_string());
+                    metrics::counter!("domain_hits", 
+                        "subdomain" => (rule_domain != domain).to_string(), 
+                        "domain" => rule_domain, 
+                        "interface" => interface.to_string()).increment(1);
+                    return Some(interface);
                 }
             }
         } else if let Err(e) = rules_result {
@@ -241,7 +250,7 @@ impl DomainController for SqliteDomainController {
 
         // 2. Check list domains
         let mut qb = sqlx::QueryBuilder::<sqlx::Sqlite>::new(
-            "SELECT list_domains.list_id, list_domains.domain, domain_lists.include_subdomains 
+            "SELECT list_domains.list_id, list_domains.domain, domain_lists.include_subdomains, domain_lists.interface 
              FROM list_domains 
              JOIN domain_lists ON list_domains.list_id = domain_lists.id 
              WHERE list_domains.domain IN ("
@@ -258,15 +267,20 @@ impl DomainController for SqliteDomainController {
                 let list_id: i64 = row.get(0);
                 let hit_domain: String = row.get(1);
                 let include_subdomains: bool = row.get(2);
+                let interface: Option<String> = row.get(3);
                 if hit_domain == domain || include_subdomains {
-                    metrics::counter!("list_hits", "list_id" => list_id.to_string(), "subdomain" => (hit_domain != domain).to_string()).increment(1);
-                    return true;
+                    let interface = interface.unwrap_or_else(|| "default".to_string());
+                    metrics::counter!("list_hits", 
+                        "list_id" => list_id.to_string(), 
+                        "subdomain" => (hit_domain != domain).to_string(), 
+                        "interface" => interface.to_string()).increment(1);
+                    return Some(interface);
                 }
             }
         } else if let Err(e) = list_result {
             error!("Error querying list_domains: {}", e);
         }
 
-        false
+        None
     }
 }

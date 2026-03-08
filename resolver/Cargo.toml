@@ -1,6 +1,6 @@
 [package]
 name = "resolver"
-version = "0.1.0"
+version = "0.2.0"
 edition = "2024"
 
 [dependencies]
@@ -34,4 +34,3 @@ frontend = { path = "../frontend" }
 anyhow = "1.0.102"
 metrics = "0.24"
 metrics-exporter-prometheus = "0.18"
-serde_with = "3.17.0"

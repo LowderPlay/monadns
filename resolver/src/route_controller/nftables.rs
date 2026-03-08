@@ -11,60 +11,25 @@ use nftables::expr::{Expression, Meta, MetaKey, NamedExpression, Payload, Payloa
 use nftables::stmt::{Mangle, Match, Operator, Statement, NAT};
 use rtnetlink::packet_route::rule::{RuleAction, RuleAttribute};
 use crate::route_controller::RouteController;
+use crate::config::InterfaceConfig;
 
 const MAP_V4: &str = "fake_to_real_v4";
 const MAP_V6: &str = "fake_to_real_v6";
+const MAP_V4_MARK: &str = "fake_to_mark_v4";
+const MAP_V6_MARK: &str = "fake_to_mark_v6";
 
 #[derive(Clone)]
 pub struct NetworkManager {
-    table_id: u8,
-    iface: String,
+    interfaces: Vec<InterfaceConfig>,
     nft_table_name: String,
-    fwmark: u32,
-    tcp_mss_clamp: Option<u32>,
-    ipv4_snat: Option<IpAddr>,
-    ipv6_snat: Option<IpAddr>,
 }
 
 impl NetworkManager {
-    /// Create a new NetworkManager
-    ///
-    /// # Arguments
-    /// * `table_id` - Specifies ip rule table to steer traffic to.
-    /// * `iface` - Specifies outgoing interface, which is used for postrouting filter to apply NAT/Masquerade.
-    pub fn new(table_id: u8, iface: &str) -> Self {
+    pub fn new(interfaces: Vec<InterfaceConfig>) -> Self {
         Self {
-            table_id,
-            iface: iface.to_string(),
+            interfaces,
             nft_table_name: "monadns_steering".to_string(),
-            fwmark: 1,
-            tcp_mss_clamp: None,
-            ipv4_snat: None,
-            ipv6_snat: None,
         }
-    }
-
-    pub fn set_tcp_mss_clamp(&mut self, tcp_mss_clamp: Option<u32>) -> &mut NetworkManager {
-        self.tcp_mss_clamp = tcp_mss_clamp;
-        self
-    }
-
-    /// NATs Source IPv4 for outgoing packets.
-    ///
-    /// # Note
-    /// Setting `None` disables NAT and uses Masquerading
-    pub fn set_ipv4_snat(&mut self, ipv4_snat: Option<IpAddr>) -> &mut NetworkManager {
-        self.ipv4_snat = ipv4_snat;
-        self
-    }
-
-    /// NATs Source IPv6 for outgoing packets.
-    ///
-    /// # Note
-    /// Setting `None` disables NAT and uses Masquerading
-    pub fn set_ipv6_snat(&mut self, ipv6_snat: Option<IpAddr>) -> &mut NetworkManager {
-        self.ipv6_snat = ipv6_snat;
-        self
     }
 
     pub async fn init(&self) -> anyhow::Result<()> {
@@ -79,20 +44,22 @@ impl NetworkManager {
         let (conn, handle, _) = new_connection()?;
         tokio::spawn(conn);
 
-        // Add Rule: fwmark -> table
-        handle.rule().add().v4()
-            .table_id(self.table_id as u32)
-            .fw_mark(self.fwmark)
-            .priority(100)
-            .action(RuleAction::ToTable)
-            .execute().await?;
+        for iface in &self.interfaces {
+            // Add Rule: fwmark -> table
+            handle.rule().add().v4()
+                .table_id(iface.table_id as u32)
+                .fw_mark(iface.fwmark)
+                .priority(100)
+                .action(RuleAction::ToTable)
+                .execute().await?;
 
-        handle.rule().add().v6()
-            .table_id(self.table_id as u32)
-            .fw_mark(self.fwmark)
-            .priority(100)
-            .action(RuleAction::ToTable)
-            .execute().await?;
+            handle.rule().add().v6()
+                .table_id(iface.table_id as u32)
+                .fw_mark(iface.fwmark)
+                .priority(100)
+                .action(RuleAction::ToTable)
+                .execute().await?;
+        }
 
         Ok(())
     }
@@ -117,6 +84,8 @@ impl NetworkManager {
         let maps = [
             (MAP_V4, SetType::Ipv4Addr, SetType::Ipv4Addr),
             (MAP_V6, SetType::Ipv6Addr, SetType::Ipv6Addr),
+            (MAP_V4_MARK, SetType::Ipv4Addr, SetType::Mark),
+            (MAP_V6_MARK, SetType::Ipv6Addr, SetType::Mark),
         ];
 
         for (name, key, value) in maps {
@@ -132,26 +101,39 @@ impl NetworkManager {
 
         let counters = ["cnt_v4_tx", "cnt_v4_rx", "cnt_v6_tx", "cnt_v6_rx"];
         for name in counters {
-            batch.add(NfListObject::Counter(Counter {
-                family,
-                table: self.nft_table_name.clone().into(),
-                name: name.into(),
-                ..Default::default()
-            }));
+            for iface in &self.interfaces {
+                batch.add(NfListObject::Counter(Counter {
+                    family,
+                    table: self.nft_table_name.clone().into(),
+                    name: format!("{}_{}", name, iface.name).into(),
+                    ..Default::default()
+                }));
+            }
         }
 
         self.add_chains(&mut batch, family);
 
         // MTU clamping to avoid fragmentation issues on tunnels
-        if let Some(mss) = self.tcp_mss_clamp {
-            batch.add(NfListObject::Rule(self.get_mtu_clamp_rule("forward", mss)));
-            batch.add(NfListObject::Rule(self.get_mtu_clamp_rule("output", mss)));
+        for iface in &self.interfaces {
+            if let Some(mss) = iface.tcp_mss_clamp {
+                batch.add(NfListObject::Rule(self.get_mtu_clamp_rule("forward", iface.fwmark, mss)));
+                batch.add(NfListObject::Rule(self.get_mtu_clamp_rule("output", iface.fwmark, mss)));
+            }
         }
 
         for ip in [IpVersion::V4, IpVersion::V6] {
             batch.add(NfListObject::Rule(self.get_steering_rule("mangle_prerouting", ip.clone())));
             batch.add(NfListObject::Rule(self.get_steering_rule("mangle_output", ip.clone())));
-            batch.add(NfListObject::Rule(self.get_rx_metrics_rule("mangle_prerouting", ip.clone())));
+
+            for iface in &self.interfaces {
+                batch.add(NfListObject::Rule(self.get_tx_interface_metrics_rule("mangle_prerouting", ip.clone(), iface)));
+                batch.add(NfListObject::Rule(self.get_tx_interface_metrics_rule("mangle_output", ip.clone(), iface)));
+            }
+
+            for iface in &self.interfaces {
+                batch.add(NfListObject::Rule(self.get_rx_interface_metrics_rule("mangle_prerouting", ip.clone(), iface)));
+            }
+
             batch.add(NfListObject::Rule(self.get_dnat_rule("prerouting", ip.clone())));
             batch.add(NfListObject::Rule(self.get_dnat_rule("output", ip)));
         }
@@ -196,60 +178,62 @@ impl NetworkManager {
     }
 
     fn add_postrouting_rules(&self, batch: &mut Batch, family: NfFamily) {
-        let fwmark_match = Statement::Match(Match {
-            left: Expression::Named(NamedExpression::Meta(Meta { key: MetaKey::Mark })),
-            right: Expression::Number(self.fwmark),
-            op: Operator::EQ,
-        });
-        let iface_match = Statement::Match(Match {
-            left: Expression::Named(NamedExpression::Meta(Meta { key: MetaKey::Oifname })),
-            right: Expression::String(self.iface.clone().into()),
-            op: Operator::EQ,
-        });
+        for iface in &self.interfaces {
+            let fwmark_match = Statement::Match(Match {
+                left: Expression::Named(NamedExpression::Meta(Meta { key: MetaKey::Mark })),
+                right: Expression::Number(iface.fwmark),
+                op: Operator::EQ,
+            });
+            let iface_match = Statement::Match(Match {
+                left: Expression::Named(NamedExpression::Meta(Meta { key: MetaKey::Oifname })),
+                right: Expression::String(iface.name.clone().into()),
+                op: Operator::EQ,
+            });
 
-        let stacks = [
-            (self.ipv4_snat, "ip", "ipv4"),
-            (self.ipv6_snat, "ip6", "ipv6")
-        ];
-
-        for (snat, protocol, nfproto) in stacks {
-            let mut rules = vec![
-                Self::match_nfproto(nfproto),
-                fwmark_match.clone(),
-                iface_match.clone()
+            let stacks = [
+                (iface.ipv4_snat, "ip", "ipv4"),
+                (iface.ipv6_snat, "ip6", "ipv6")
             ];
-            if let Some(snat) = snat {
-                rules.extend(vec![
-                    Statement::Match(Match {
-                        left: Expression::Named(NamedExpression::Payload(Payload::PayloadField(PayloadField {
-                            protocol: protocol.into(),
-                            field: "saddr".into(),
-                        }))),
-                        op: Operator::NEQ,
-                        right: Expression::String(snat.to_string().into()),
-                    }),
-                    Statement::SNAT(Some(NAT {
-                        addr: Some(Expression::String(snat.to_string().into())),
-                        family: None,
-                        port: None,
-                        flags: None,
-                    }))
-                ]);
-            } else {
-                rules.push(Statement::Masquerade(None));
-            }
 
-            batch.add(NfListObject::Rule(Rule {
-                family,
-                table: self.nft_table_name.clone().into(),
-                chain: "postrouting".into(),
-                expr: rules.into(),
-                ..Default::default()
-            }));
+            for (snat, protocol, nfproto) in stacks {
+                let mut rules = vec![
+                    Self::match_nfproto(nfproto),
+                    fwmark_match.clone(),
+                    iface_match.clone()
+                ];
+                if let Some(snat) = snat {
+                    rules.extend(vec![
+                        Statement::Match(Match {
+                            left: Expression::Named(NamedExpression::Payload(Payload::PayloadField(PayloadField {
+                                protocol: protocol.into(),
+                                field: "saddr".into(),
+                            }))),
+                            op: Operator::NEQ,
+                            right: Expression::String(snat.to_string().into()),
+                        }),
+                        Statement::SNAT(Some(NAT {
+                            addr: Some(Expression::String(snat.to_string().into())),
+                            family: None,
+                            port: None,
+                            flags: None,
+                        }))
+                    ]);
+                } else {
+                    rules.push(Statement::Masquerade(None));
+                }
+
+                batch.add(NfListObject::Rule(Rule {
+                    family,
+                    table: self.nft_table_name.clone().into(),
+                    chain: "postrouting".into(),
+                    expr: rules.into(),
+                    ..Default::default()
+                }));
+            }
         }
     }
 
-    fn get_mtu_clamp_rule(&self, chain: &'static str, mtu: u32) -> Rule<'_> {
+    fn get_mtu_clamp_rule(&self, chain: &'static str, fwmark: u32, mtu: u32) -> Rule<'_> {
         Rule {
             family: NfFamily::INet,
             table: self.nft_table_name.clone().into(),
@@ -257,7 +241,7 @@ impl NetworkManager {
             expr: vec![
                 Statement::Match(Match {
                     left: Expression::Named(NamedExpression::Meta(Meta { key: MetaKey::Mark })),
-                    right: Expression::Number(self.fwmark),
+                    right: Expression::Number(fwmark),
                     op: Operator::EQ,
                 }),
                 Statement::Match(Match {
@@ -288,15 +272,22 @@ impl NetworkManager {
             op: Operator::EQ,
         })
     }
-    fn get_steering_rule(&self, chain: &'static str, version: IpVersion) -> Rule<'_> {
-        let (protocol, map_name) = match version {
-            IpVersion::V4 => ("ip", MAP_V4),
-            IpVersion::V6 => ("ip6", MAP_V6),
-        };
 
-        let counter_name = match version {
-            IpVersion::V4 => "cnt_v4_tx",
-            IpVersion::V6 => "cnt_v6_tx",
+    fn map_expression<'a>(protocol: &'a str, map_name: &'a str) -> Expression<'a> {
+        Expression::Named(NamedExpression::Map(Box::new(expr::Map {
+            key: Expression::Named(NamedExpression::Payload(
+                Payload::PayloadField(PayloadField {
+                    protocol: protocol.into(),
+                    field: "daddr".into()
+                }))),
+            data: Expression::String(format!("@{}", map_name).into()),
+        })))
+    }
+
+    fn get_steering_rule(&self, chain: &'static str, version: IpVersion) -> Rule<'_> {
+        let (protocol, map_name, mark_map_name) = match version {
+            IpVersion::V4 => ("ip", MAP_V4, MAP_V4_MARK),
+            IpVersion::V6 => ("ip6", MAP_V6, MAP_V6_MARK),
         };
 
         Rule {
@@ -305,29 +296,54 @@ impl NetworkManager {
             chain: chain.into(),
             expr: vec![
                 Self::dest_match_statement(protocol, map_name),
-                Statement::Counter(stmt::Counter::Named(counter_name.into())),
                 Statement::Mangle(Mangle {
                     key: Expression::Named(NamedExpression::Meta(Meta { key: MetaKey::Mark })),
-                    value: Expression::Number(self.fwmark),
+                    value: Self::map_expression(protocol, mark_map_name),
                 }),
                 Statement::Mangle(Mangle {
                     key: Expression::Named(NamedExpression::CT(expr::CT {
                         key: "mark".into(),
                         ..Default::default()
                     })),
-                    value: Expression::Number(self.fwmark),
+                    value: Expression::Named(NamedExpression::Meta(Meta { key: MetaKey::Mark })),
                 }),
             ].into(),
             ..Default::default()
         }
     }
 
-    fn get_rx_metrics_rule(&self, chain: &'static str, version: IpVersion) -> Rule<'_> {
-        let counter_name = match version {
+    fn get_tx_interface_metrics_rule(&self, chain: &'static str, version: IpVersion, iface: &InterfaceConfig) -> Rule<'_> {
+        let counter_base = match version {
+            IpVersion::V4 => "cnt_v4_tx",
+            IpVersion::V6 => "cnt_v6_tx",
+        };
+        let nfproto = match version {
+            IpVersion::V4 => "ipv4",
+            IpVersion::V6 => "ipv6",
+        };
+
+        Rule {
+            family: NfFamily::INet,
+            table: self.nft_table_name.clone().into(),
+            chain: chain.into(),
+            expr: vec![
+                Self::match_nfproto(nfproto),
+                Statement::Match(Match {
+                    left: Expression::Named(NamedExpression::Meta(Meta { key: MetaKey::Mark })),
+                    right: Expression::Number(iface.fwmark),
+                    op: Operator::EQ,
+                }),
+                Statement::Counter(stmt::Counter::Named(format!("{}_{}", counter_base, iface.name).into())),
+            ].into(),
+            ..Default::default()
+        }
+    }
+
+    fn get_rx_interface_metrics_rule(&self, chain: &'static str, version: IpVersion, iface: &InterfaceConfig) -> Rule<'_> {
+        let counter_base = match version {
             IpVersion::V4 => "cnt_v4_rx",
             IpVersion::V6 => "cnt_v6_rx",
         };
-
         let nfproto = match version {
             IpVersion::V4 => "ipv4",
             IpVersion::V6 => "ipv6",
@@ -344,7 +360,7 @@ impl NetworkManager {
                         key: "mark".into(),
                         ..Default::default()
                     })),
-                    right: Expression::Number(self.fwmark),
+                    right: Expression::Number(iface.fwmark),
                     op: Operator::EQ,
                 }),
                 Statement::Match(Match {
@@ -355,7 +371,7 @@ impl NetworkManager {
                     right: Expression::String("reply".into()),
                     op: Operator::EQ,
                 }),
-                Statement::Counter(stmt::Counter::Named(counter_name.into())),
+                Statement::Counter(stmt::Counter::Named(format!("{}_{}", counter_base, iface.name).into())),
             ].into(),
             ..Default::default()
         }
@@ -374,14 +390,7 @@ impl NetworkManager {
             expr: vec![
                 Self::dest_match_statement(protocol, map_name),
                 Statement::DNAT(Some(NAT {
-                    addr: Some(Expression::Named(NamedExpression::Map(Box::new(expr::Map {
-                        key: Expression::Named(NamedExpression::Payload(
-                            Payload::PayloadField(PayloadField {
-                                protocol: protocol.into(),
-                                field: "daddr".into()
-                            }))),
-                        data: Expression::String(format!("@{}", map_name).into()),
-                    })))),
+                    addr: Some(Self::map_expression(protocol, map_name)),
                     family: None,
                     port: None,
                     flags: None,
@@ -394,24 +403,29 @@ impl NetworkManager {
 
 #[async_trait]
 impl RouteController for NetworkManager {
-    async fn add_mapping(&self, fake_ip: IpAddr, real_ip: IpAddr) -> anyhow::Result<()> {
-        let map_name = match fake_ip {
-            IpAddr::V4(_) => MAP_V4,
-            IpAddr::V6(_) => MAP_V6,
+    async fn add_mapping(&self, fake_ip: IpAddr, real_ip: IpAddr, fwmark: u32) -> anyhow::Result<()> {
+        let (map_name, mark_map_name) = match fake_ip {
+            IpAddr::V4(_) => (MAP_V4, MAP_V4_MARK),
+            IpAddr::V6(_) => (MAP_V6, MAP_V6_MARK),
         };
 
         let mut batch = Batch::new();
-        batch.delete(NfListObject::Element(Element {
-            family: NfFamily::INet,
-            table: self.nft_table_name.clone().into(),
-            name: map_name.into(),
-            elem: vec![Expression::String(fake_ip.to_string().into())].into(),
-        }));
+        // Remove existing mapping for this fake_ip from BOTH maps
+        for m in [map_name, mark_map_name] {
+            batch.delete(NfListObject::Element(Element {
+                family: NfFamily::INet,
+                table: self.nft_table_name.clone().into(),
+                name: m.into(),
+                elem: vec![Expression::String(fake_ip.to_string().into())].into(),
+            }));
+        }
+        
         if let Ok(_) = nftables::helper::apply_ruleset(&batch.to_nftables()) {
-            info!("removed conflicting map entry {}", fake_ip);
+            info!("removed conflicting map entries for {}", fake_ip);
         }
 
         let mut batch = Batch::new();
+        // Add to fake_to_real map
         batch.add(NfListObject::Element(Element {
             family: NfFamily::INet,
             table: self.nft_table_name.clone().into(),
@@ -421,6 +435,18 @@ impl RouteController for NetworkManager {
                 Expression::String(real_ip.to_string().into()),
             ])].into(),
         }));
+        
+        // Add to fake_to_mark map
+        batch.add(NfListObject::Element(Element {
+            family: NfFamily::INet,
+            table: self.nft_table_name.clone().into(),
+            name: mark_map_name.into(),
+            elem: vec![Expression::List(vec![
+                Expression::String(fake_ip.to_string().into()),
+                Expression::Number(fwmark),
+            ])].into(),
+        }));
+
         nftables::helper::apply_ruleset(&batch.to_nftables())?;
         metrics::counter!("mapped_ip_count", "family" => if real_ip.is_ipv4() { "ipv4" } else { "ipv6" }).increment(1);
         Ok(())
@@ -442,10 +468,14 @@ impl RouteController for NetworkManager {
         for version in [IpVersion::V4, IpVersion::V6] {
             let mut rules = handle.rule().get(version).execute();
             while let Some(rule) = rules.try_next().await? {
-                if rule.header.table == self.table_id &&
-                    rule.header.action == RuleAction::ToTable &&
-                    rule.attributes.contains(&RuleAttribute::FwMark(self.fwmark)) {
-                    handle.rule().del(rule).execute().await?;
+                // Check if this rule's table_id and fwmark match any of our interfaces
+                if let Some(mark) = rule.attributes.iter().find_map(|attr| match attr {
+                    RuleAttribute::FwMark(m) => Some(*m),
+                    _ => None
+                }) {
+                    if self.interfaces.iter().any(|iface| iface.fwmark == mark && iface.table_id == rule.header.table) {
+                        handle.rule().del(rule).execute().await?;
+                    }
                 }
             }
         }
@@ -479,14 +509,20 @@ impl RouteController for NetworkManager {
             if let Some(counter_val) = obj.get("counter") {
                 let c: CounterData = serde_json::from_value(counter_val.clone())?;
                 if c.table == self.nft_table_name {
-                    let (family, direction) = if c.name.contains("v4") {
-                        ("ipv4", if c.name.contains("rx") { "rx" } else { "tx" })
+                    let (family, direction, interface) = if c.name.starts_with("cnt_v4_tx") {
+                        ("ipv4", "tx", if c.name.len() > 9 { &c.name[10..] } else { "total" })
+                    } else if c.name.starts_with("cnt_v4_rx") {
+                        ("ipv4", "rx", if c.name.len() > 9 { &c.name[10..] } else { "total" })
+                    } else if c.name.starts_with("cnt_v6_tx") {
+                        ("ipv6", "tx", if c.name.len() > 9 { &c.name[10..] } else { "total" })
+                    } else if c.name.starts_with("cnt_v6_rx") {
+                        ("ipv6", "rx", if c.name.len() > 9 { &c.name[10..] } else { "total" })
                     } else {
-                        ("ipv6", if c.name.contains("rx") { "rx" } else { "tx" })
+                        continue;
                     };
 
-                    metrics::gauge!("intercepted_packets", "family" => family, "direction" => direction).set(c.packets as f64);
-                    metrics::gauge!("intercepted_bytes", "family" => family, "direction" => direction).set(c.bytes as f64);
+                    metrics::gauge!("intercepted_packets", "family" => family, "direction" => direction, "interface" => interface.to_string()).set(c.packets as f64);
+                    metrics::gauge!("intercepted_bytes", "family" => family, "direction" => direction, "interface" => interface.to_string()).set(c.bytes as f64);
                 }
             }
         }

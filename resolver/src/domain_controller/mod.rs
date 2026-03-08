@@ -5,7 +5,7 @@ use async_trait::async_trait;
 
 #[async_trait]
 pub trait DomainController: Send + Sync {
-    async fn should_intercept(&self, domain: &str) -> bool;
+    async fn should_intercept(&self, domain: &str) -> Option<String>;
 }
 
 #[allow(dead_code)]
@@ -24,7 +24,11 @@ impl DummyDomainController {
 
 #[async_trait]
 impl DomainController for DummyDomainController {
-    async fn should_intercept(&self, domain: &str) -> bool {
-        self.domains.contains(domain)
+    async fn should_intercept(&self, domain: &str) -> Option<String> {
+        if self.domains.contains(domain) {
+            Some("default".to_string())
+        } else {
+            None
+        }
     }
 }

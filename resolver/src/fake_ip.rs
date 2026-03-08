@@ -9,8 +9,8 @@ use tokio::sync::Mutex;
 use crate::route_controller::RouteController;
 
 pub struct IpManager {
-    real_to_fake: DashMap<IpAddr, IpAddr>,
-    fake_to_real: DashMap<IpAddr, IpAddr>,
+    real_to_fake: DashMap<(IpAddr, String), IpAddr>,
+    fake_to_real: DashMap<IpAddr, (IpAddr, String)>,
     state: Mutex<IpManagerState>,
     network: IpNet,
     controller: Arc<dyn RouteController>,
@@ -84,8 +84,9 @@ impl IpManager {
         }
     }
 
-    pub async fn get_or_assign_ip(&self, real: &IpAddr) -> anyhow::Result<IpAddr> {
-        if let Some(ip) = self.real_to_fake.get(real).map(|r| *r) {
+    pub async fn get_or_assign_ip(&self, real: &IpAddr, interface: &str, fwmark: u32) -> anyhow::Result<IpAddr> {
+        let key = (*real, interface.to_string());
+        if let Some(ip) = self.real_to_fake.get(&key).map(|r| *r) {
             let mut state = self.state.lock().await;
             state.lru.get(&ip);
             return Ok(ip);
@@ -99,28 +100,28 @@ impl IpManager {
                 state.next_host_index += 1;
 
                 if let Some((old_ip, _)) = state.lru.push(ip, ()) {
-                    if let Some((_, old_real)) = self.fake_to_real.remove(&old_ip) {
-                        self.real_to_fake.remove(&old_real);
+                    if let Some((_, old_key)) = self.fake_to_real.remove(&old_ip) {
+                        self.real_to_fake.remove(&old_key);
                     }
                 }
                 
-                self.real_to_fake.insert(*real, ip);
-                self.fake_to_real.insert(ip, *real);
+                self.real_to_fake.insert(key.clone(), ip);
+                self.fake_to_real.insert(ip, key);
                 ip
             } else {
                 let (old_ip, _) = state.lru.pop_lru().expect("Pool should not be empty");
-                if let Some((_, old_real)) = self.fake_to_real.remove(&old_ip) {
-                    self.real_to_fake.remove(&old_real);
+                if let Some((_, old_key)) = self.fake_to_real.remove(&old_ip) {
+                    self.real_to_fake.remove(&old_key);
                 }
 
-                self.real_to_fake.insert(*real, old_ip);
-                self.fake_to_real.insert(old_ip, *real);
+                self.real_to_fake.insert(key.clone(), old_ip);
+                self.fake_to_real.insert(old_ip, key);
                 state.lru.put(old_ip, ());
                 old_ip
             }
         };
 
-        self.controller.add_mapping(ip, *real).await?;
+        self.controller.add_mapping(ip, *real, fwmark).await?;
 
         Ok(ip)
     }

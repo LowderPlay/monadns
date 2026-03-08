@@ -9,61 +9,70 @@ use hickory_proto::http::DEFAULT_DNS_QUERY_PATH;
 use log::{info, warn};
 
 #[derive(Clone, Debug, Serialize, Deserialize, utoipa::ToSchema)]
-pub struct Config {
+pub struct InterfaceConfig {
+    pub name: String,
+    pub fwmark: u32,
     pub table_id: u8,
-    pub iface: String,
     pub tcp_mss_clamp: Option<u32>,
     #[schema(value_type = Option<String>)]
     pub ipv4_snat: Option<IpAddr>,
     #[schema(value_type = Option<String>)]
     pub ipv6_snat: Option<IpAddr>,
+}
+
+#[derive(Clone, Debug, Serialize, Deserialize, utoipa::ToSchema)]
+pub struct Config {
+    #[serde(default)]
+    pub interfaces: Vec<InterfaceConfig>,
+    #[serde(default)]
+    pub default_interface: String,
     #[schema(value_type = String)]
     pub ipv4_subnet: Ipv4Net,
     #[schema(value_type = String)]
     pub ipv6_subnet: Ipv6Net,
     pub upstream_resolver: UpstreamResolverConfig,
+
+    // Backwards compatibility fields
+    #[serde(skip_serializing, default)]
+    pub table_id: Option<u8>,
+    #[serde(skip_serializing, default)]
+    pub iface: Option<String>,
+    #[serde(skip_serializing, default)]
+    pub tcp_mss_clamp: Option<u32>,
+    #[serde(skip_serializing, default)]
+    pub ipv4_snat: Option<IpAddr>,
+    #[serde(skip_serializing, default)]
+    pub ipv6_snat: Option<IpAddr>,
 }
 
 impl Default for Config {
     fn default() -> Self {
         Self {
-            table_id: 100,
-            iface: "wg0".to_string(),
-            tcp_mss_clamp: Some(1280),
-            ipv4_snat: Some(IpAddr::V4(Ipv4Addr::new(10, 10, 10, 4))),
-            ipv6_snat: None,
+            interfaces: vec![InterfaceConfig {
+                name: "wg0".to_string(),
+                fwmark: 1,
+                table_id: 100,
+                tcp_mss_clamp: Some(1280),
+                ipv4_snat: Some(IpAddr::V4(Ipv4Addr::new(10, 10, 10, 4))),
+                ipv6_snat: None,
+            }],
+            default_interface: "wg0".to_string(),
             ipv4_subnet: Ipv4Net::from_str("198.18.0.0/15").unwrap(),
             ipv6_subnet: Ipv6Net::from_str("fd32:bfcc:fba0:1337::/64").unwrap(),
             upstream_resolver: UpstreamResolverConfig::Quad9Https,
+            table_id: None,
+            iface: None,
+            tcp_mss_clamp: None,
+            ipv4_snat: None,
+            ipv6_snat: None,
         }
     }
 }
 
 #[derive(Clone, Debug, Serialize, Deserialize, Default, utoipa::ToSchema)]
 pub struct PatchConfig {
-    pub table_id: Option<u8>,
-    pub iface: Option<String>,
-    #[schema(value_type = Option<Option<u32>>)]
-    #[serde(
-        default,
-        skip_serializing_if = "Option::is_none",
-        with = "::serde_with::rust::double_option",
-    )]
-    pub tcp_mss_clamp: Option<Option<u32>>,
-    #[schema(value_type = Option<Option<String>>)]
-    #[serde(
-        default,
-        skip_serializing_if = "Option::is_none",
-        with = "::serde_with::rust::double_option",
-    )]
-    pub ipv4_snat: Option<Option<IpAddr>>,
-    #[schema(value_type = Option<Option<String>>)]
-    #[serde(
-        default,
-        skip_serializing_if = "Option::is_none",
-        with = "::serde_with::rust::double_option",
-    )]
-    pub ipv6_snat: Option<Option<IpAddr>>,
+    pub interfaces: Option<Vec<InterfaceConfig>>,
+    pub default_interface: Option<String>,
     #[schema(value_type = Option<String>)]
     pub ipv4_subnet: Option<Ipv4Net>,
     #[schema(value_type = Option<String>)]
@@ -88,7 +97,27 @@ impl Config {
         }
 
         let content = std::fs::read_to_string(&path)?;
-        let config: Config = toml::from_str(&content)?;
+        let mut config: Config = toml::from_str(&content)?;
+        println!("{:?}", config);
+
+        // Migration logic for backwards compatibility
+        if config.interfaces.is_empty() {
+            let name = config.iface.clone().unwrap_or_else(|| "wg0".to_string());
+            config.interfaces.push(InterfaceConfig {
+                name: name.clone(),
+                fwmark: 1,
+                table_id: config.table_id.unwrap_or(100),
+                tcp_mss_clamp: config.tcp_mss_clamp,
+                ipv4_snat: config.ipv4_snat,
+                ipv6_snat: config.ipv6_snat,
+            });
+            if config.default_interface.is_empty() {
+                config.default_interface = name;
+            }
+        } else if config.default_interface.is_empty() {
+            config.default_interface = config.interfaces[0].name.clone();
+        }
+
         Ok(config)
     }
 
@@ -128,14 +157,16 @@ impl Config {
 
     pub fn patch(&self, patch: PatchConfig) -> Self {
         Self {
-            table_id: patch.table_id.unwrap_or(self.table_id),
-            iface: patch.iface.unwrap_or_else(|| self.iface.clone()),
-            tcp_mss_clamp: patch.tcp_mss_clamp.unwrap_or(self.tcp_mss_clamp),
-            ipv4_snat: patch.ipv4_snat.unwrap_or(self.ipv4_snat),
-            ipv6_snat: patch.ipv6_snat.unwrap_or(self.ipv6_snat),
+            interfaces: patch.interfaces.unwrap_or_else(|| self.interfaces.clone()),
+            default_interface: patch.default_interface.unwrap_or_else(|| self.default_interface.clone()),
             ipv4_subnet: patch.ipv4_subnet.unwrap_or(self.ipv4_subnet),
             ipv6_subnet: patch.ipv6_subnet.unwrap_or(self.ipv6_subnet),
             upstream_resolver: patch.upstream_resolver.unwrap_or_else(|| self.upstream_resolver.clone()),
+            table_id: None,
+            iface: None,
+            tcp_mss_clamp: None,
+            ipv4_snat: None,
+            ipv6_snat: None,
         }
     }
 }

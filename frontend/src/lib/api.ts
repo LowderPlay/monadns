@@ -14,23 +14,26 @@ export type UpstreamResolverConfig =
   | { type: 'GoogleHttps' }
   | { type: 'Custom', nameservers: CustomNameserverConfig[] };
 
-export interface Config {
+export interface InterfaceConfig {
+  name: string;
+  fwmark: number;
   table_id: number;
-  iface: string;
   tcp_mss_clamp: number | null;
   ipv4_snat: string | null;
   ipv6_snat: string | null;
+}
+
+export interface Config {
+  interfaces: InterfaceConfig[];
+  default_interface: string;
   ipv4_subnet: string;
   ipv6_subnet: string;
   upstream_resolver: UpstreamResolverConfig;
 }
 
 export interface PatchConfig {
-  table_id?: number;
-  iface?: string;
-  tcp_mss_clamp?: number | null;
-  ipv4_snat?: string | null;
-  ipv6_snat?: string | null;
+  interfaces?: InterfaceConfig[];
+  default_interface?: string;
   ipv4_subnet?: string;
   ipv6_subnet?: string;
   upstream_resolver?: UpstreamResolverConfig;
@@ -39,6 +42,7 @@ export interface PatchConfig {
 export interface DomainRule {
   domain: string;
   include_subdomains: boolean;
+  interface: string | null;
 }
 
 export interface DomainList {
@@ -47,6 +51,7 @@ export interface DomainList {
   update_interval_seconds: number;
   include_subdomains: boolean;
   last_updated: string | null;
+  interface: string | null;
 }
 
 async function request<T>(path: string, options: RequestInit = {}): Promise<T> {

@@ -12,7 +12,10 @@ use crate::domain_controller::DomainController;
 use crate::fake_ip::IpManager;
 use crate::route_controller::RouteController;
 
+use crate::config::Config;
+
 pub struct HandlerState {
+    pub config: Arc<Config>,
     pub v4: IpManager,
     pub v6: IpManager,
     pub upstream: TokioResolver,
@@ -68,12 +71,23 @@ impl RequestHandler for FakeIpHandler {
             }
         };
 
-        if state.domain_controller.should_intercept(&name).await {
+        if let Some(mut interface_name) = state.domain_controller.should_intercept(&name).await {
+            if interface_name == "default" {
+                interface_name = state.config.default_interface.clone();
+            }
+
+            let iface_config = state.config.interfaces.iter().find(|i| i.name == interface_name)
+                .or_else(|| state.config.interfaces.iter().find(|i| i.name == state.config.default_interface))
+                .unwrap_or_else(|| &state.config.interfaces[0]);
+            
+            let fwmark = iface_config.fwmark;
+            let actual_interface_name = &iface_config.name;
+
             let mut records = lookup.records().to_vec();
             for r in &mut records {
                 let real_ip = match r.data() {
-                    RData::A(a) => state.v4.get_or_assign_ip(&IpAddr::V4(a.0)).await,
-                    RData::AAAA(aaaa) => state.v6.get_or_assign_ip(&IpAddr::V6(aaaa.0)).await,
+                    RData::A(a) => state.v4.get_or_assign_ip(&IpAddr::V4(a.0), actual_interface_name, fwmark).await,
+                    RData::AAAA(aaaa) => state.v6.get_or_assign_ip(&IpAddr::V6(aaaa.0), actual_interface_name, fwmark).await,
                     _ => continue
                 };
                 

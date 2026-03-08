@@ -1,30 +1,37 @@
 <script lang="ts">
   import { onMount } from 'svelte';
-  import { api, type DomainRule } from '../lib/api';
+  import { api, type DomainRule, type Config } from './api';
   import { toast } from './toast_state.svelte';
 
   let domains = $state<DomainRule[]>([]);
+  let config = $state<Config | null>(null);
   let error = $state<string | null>(null);
   let loading = $state(true);
 
   // Form for adding new domain
   let newDomain = $state('');
   let newIncludeSubdomains = $state(true);
+  let newInterface = $state<string | null>(null);
   let adding = $state(false);
 
-  async function loadDomains() {
+  async function loadData() {
     loading = true;
     try {
-      domains = await api.getDomains();
+      const [d, c] = await Promise.all([api.getDomains(), api.getConfig()]);
+      domains = d;
+      config = c;
+      if (!newInterface && config.interfaces.length > 0) {
+        newInterface = 'default';
+      }
     } catch (e: any) {
       error = e.message;
-      toast.error('Failed to load domains: ' + e.message);
+      toast.error('Failed to load data: ' + e.message);
     } finally {
       loading = false;
     }
   }
 
-  onMount(loadDomains);
+  onMount(loadData);
 
   async function addDomain() {
     if (!newDomain) return;
@@ -32,11 +39,12 @@
     try {
       await api.addDomain({
         domain: newDomain,
-        include_subdomains: newIncludeSubdomains
+        include_subdomains: newIncludeSubdomains,
+        interface: newInterface === 'default' ? null : newInterface
       });
       newDomain = '';
       toast.success('Domain rule added');
-      await loadDomains();
+      await loadData();
     } catch (e: any) {
       error = e.message;
       toast.error('Failed to add domain: ' + e.message);
@@ -50,7 +58,7 @@
     try {
       await api.removeDomain(domain);
       toast.success('Domain rule removed');
-      await loadDomains();
+      await loadData();
     } catch (e: any) {
       error = e.message;
       toast.error('Failed to remove domain: ' + e.message);
@@ -71,16 +79,27 @@
   <!-- Add New Domain Form -->
   <div class="bg-zinc-900 p-4 border border-zinc-800 space-y-4">
     <h3 class="text-lg font-bold">Add new domain rule</h3>
-    <div class="grid grid-cols-1 md:grid-cols-3 gap-4 items-end">
+    <div class="grid grid-cols-1 md:grid-cols-4 gap-4 items-end">
       <div class="flex flex-col gap-1">
         <label for="domain_input" class="text-sm text-zinc-400 font-bold">Domain</label>
         <input id="domain_input" bind:value={newDomain} placeholder="example.com" class="bg-zinc-950 border border-zinc-700 p-2 focus:outline-none focus:border-zinc-500" />
       </div>
+      <div class="flex flex-col gap-1">
+        <label for="interface_select" class="text-sm text-zinc-400 font-bold">Interface</label>
+        <select id="interface_select" bind:value={newInterface} class="bg-zinc-950 border border-zinc-700 p-2 focus:outline-none focus:border-zinc-500">
+          <option value="default">Default ({config?.default_interface || '...' })</option>
+          {#if config}
+            {#each config.interfaces as iface}
+              <option value={iface.name}>{iface.name}</option>
+            {/each}
+          {/if}
+        </select>
+      </div>
       <div class="flex items-center gap-2 h-10">
         <input type="checkbox" id="sub_domain" bind:checked={newIncludeSubdomains} class="w-4 h-4 border-zinc-700 bg-zinc-950 accent-white" />
-        <label for="sub_domain" class="text-sm text-zinc-400 font-bold">Include subdomains?</label>
+        <label for="sub_domain" class="text-sm text-zinc-400 font-bold">Subdomains?</label>
       </div>
-      <button onclick={addDomain} disabled={adding} class="bg-white text-black px-4 py-2 font-bold hover:bg-zinc-200 disabled:bg-zinc-600 transition-colors">
+      <button onclick={addDomain} disabled={adding} class="bg-white text-black px-4 py-2 font-bold hover:bg-zinc-200 disabled:bg-zinc-600 transition-colors uppercase text-xs tracking-widest">
         {adding ? 'Adding...' : 'Add domain'}
       </button>
     </div>
@@ -92,6 +111,7 @@
       <thead>
         <tr class="border-b border-zinc-800">
           <th class="p-2 text-zinc-400 font-bold uppercase text-xs tracking-wider">Domain</th>
+          <th class="p-2 text-zinc-400 font-bold uppercase text-xs tracking-wider text-center">Interface</th>
           <th class="p-2 text-zinc-400 font-bold uppercase text-xs tracking-wider text-center">Subdomains</th>
           <th class="p-2 text-zinc-400 font-bold uppercase text-xs tracking-wider text-right">Actions</th>
         </tr>
@@ -100,6 +120,7 @@
         {#each domains as d}
           <tr class="border-b border-zinc-900 hover:bg-zinc-900/50">
             <td class="p-2 tracking-tight">{d.domain}</td>
+            <td class="p-2 text-center text-sm font-mono text-zinc-400">{d.interface || 'Default'}</td>
             <td class="p-2 text-center text-sm font-mono">{d.include_subdomains ? 'YES' : 'NO'}</td>
             <td class="p-2 text-right">
               <button onclick={() => deleteDomain(d.domain)} class="text-red-500 hover:text-red-400 font-bold text-xs uppercase tracking-widest transition-colors">Delete</button>

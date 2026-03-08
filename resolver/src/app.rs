@@ -63,10 +63,7 @@ impl App {
     }
 
     async fn create_state(config: &Config, domain_controller: Arc<SqliteDomainController>) -> anyhow::Result<HandlerState> {
-        let mut route_controller = NetworkManager::new(config.table_id, &config.iface);
-        route_controller.set_tcp_mss_clamp(config.tcp_mss_clamp)
-            .set_ipv4_snat(config.ipv4_snat)
-            .set_ipv6_snat(config.ipv6_snat);
+        let route_controller = NetworkManager::new(config.interfaces.clone());
         route_controller.init().await?;
 
         let (resolver_config, resolver_opts) = config.upstream_resolver.to_resolver_parts();
@@ -77,6 +74,7 @@ impl App {
         let route_controller: Arc<dyn RouteController> = Arc::new(route_controller);
         
         let state = HandlerState {
+            config: Arc::new(config.clone()),
             v4: IpManager::new(route_controller.clone(), IpNet::V4(config.ipv4_subnet)),
             v6: IpManager::new(route_controller.clone(), IpNet::V6(config.ipv6_subnet)),
             upstream,

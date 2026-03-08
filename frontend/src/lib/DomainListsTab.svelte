@@ -1,9 +1,10 @@
 <script lang="ts">
   import { onMount } from 'svelte';
-  import { api, type DomainList } from '../lib/api';
+  import { api, type DomainList, type Config } from './api';
   import { toast } from './toast_state.svelte';
 
   let lists = $state<DomainList[]>([]);
+  let config = $state<Config | null>(null);
   let error = $state<string | null>(null);
   let loading = $state(true);
 
@@ -11,21 +12,27 @@
   let newUrl = $state('');
   let newInterval = $state(86400);
   let newIncludeSubdomains = $state(true);
+  let newInterface = $state<string | null>(null);
   let adding = $state(false);
 
-  async function loadLists() {
+  async function loadData() {
     loading = true;
     try {
-      lists = await api.getLists();
+      const [l, c] = await Promise.all([api.getLists(), api.getConfig()]);
+      lists = l;
+      config = c;
+      if (!newInterface && config.interfaces.length > 0) {
+        newInterface = 'default';
+      }
     } catch (e: any) {
       error = e.message;
-      toast.error('Failed to load lists: ' + e.message);
+      toast.error('Failed to load data: ' + e.message);
     } finally {
       loading = false;
     }
   }
 
-  onMount(loadLists);
+  onMount(loadData);
 
   async function addList() {
     if (!newUrl) return;
@@ -35,11 +42,12 @@
         url: newUrl,
         update_interval_seconds: newInterval,
         include_subdomains: newIncludeSubdomains,
-        last_updated: null
+        last_updated: null,
+        interface: newInterface === 'default' ? null : newInterface
       });
       newUrl = '';
       toast.success('Domain list added');
-      await loadLists();
+      await loadData();
     } catch (e: any) {
       error = e.message;
       toast.error('Failed to add list: ' + e.message);
@@ -53,7 +61,7 @@
     try {
       await api.removeList(id);
       toast.success('Domain list removed');
-      await loadLists();
+      await loadData();
     } catch (e: any) {
       error = e.message;
       toast.error('Failed to remove list: ' + e.message);
@@ -64,7 +72,7 @@
     try {
       await api.syncList(id);
       toast.success('Sync started');
-      await loadLists();
+      await loadData();
     } catch (e: any) {
       error = e.message;
       toast.error('Sync failed: ' + e.message);
@@ -90,10 +98,21 @@
   <!-- Add New List Form -->
   <div class="bg-zinc-900 p-4 border border-zinc-800 space-y-4">
     <h3 class="text-lg font-bold">Add new list</h3>
-    <div class="grid grid-cols-1 md:grid-cols-2 lg:grid-cols-4 gap-4 items-end">
+    <div class="grid grid-cols-1 md:grid-cols-2 lg:grid-cols-5 gap-4 items-end">
       <div class="flex flex-col gap-1">
         <label for="list_url" class="text-sm text-zinc-400 font-bold">URL</label>
         <input id="list_url" bind:value={newUrl} placeholder="https://example.com/list.txt" class="bg-zinc-950 border border-zinc-700 p-2 focus:outline-none focus:border-zinc-500" />
+      </div>
+      <div class="flex flex-col gap-1">
+        <label for="interface_select" class="text-sm text-zinc-400 font-bold">Interface</label>
+        <select id="interface_select" bind:value={newInterface} class="bg-zinc-950 border border-zinc-700 p-2 focus:outline-none focus:border-zinc-500">
+          <option value="default">Default ({config?.default_interface || '...' })</option>
+          {#if config}
+            {#each config.interfaces as iface}
+              <option value={iface.name}>{iface.name}</option>
+            {/each}
+          {/if}
+        </select>
       </div>
       <div class="flex flex-col gap-1">
         <label for="update_interval" class="text-sm text-zinc-400 font-bold">Update interval (sec)</label>
@@ -101,9 +120,9 @@
       </div>
       <div class="flex items-center gap-2 h-10">
         <input type="checkbox" id="subdomains" bind:checked={newIncludeSubdomains} class="w-4 h-4 border-zinc-700 bg-zinc-950 accent-white" />
-        <label for="subdomains" class="text-sm text-zinc-400 font-bold">Include subdomains?</label>
+        <label for="subdomains" class="text-sm text-zinc-400 font-bold">Subdomains?</label>
       </div>
-      <button onclick={addList} disabled={adding} class="bg-white text-black px-4 py-2 font-bold hover:bg-zinc-200 disabled:bg-zinc-600 transition-colors">
+      <button onclick={addList} disabled={adding} class="bg-white text-black px-4 py-2 font-bold hover:bg-zinc-200 disabled:bg-zinc-600 transition-colors uppercase text-xs tracking-widest">
         {adding ? 'Adding...' : 'Add list'}
       </button>
     </div>
@@ -116,6 +135,7 @@
         <tr class="text-left border-b border-zinc-800">
           <th class="p-2 text-zinc-400 font-bold uppercase text-xs tracking-wider">#</th>
           <th class="p-2 text-zinc-400 font-bold uppercase text-xs tracking-wider">URL</th>
+          <th class="p-2 text-zinc-400 font-bold uppercase text-xs tracking-wider text-center">Interface</th>
           <th class="p-2 text-zinc-400 font-bold uppercase text-xs tracking-wider text-center">Subdomains</th>
           <th class="p-2 text-zinc-400 font-bold uppercase text-xs tracking-wider">Last Updated</th>
           <th class="p-2 text-zinc-400 font-bold uppercase text-xs tracking-wider">Interval</th>
@@ -127,6 +147,7 @@
           <tr class="border-b border-zinc-900 hover:bg-zinc-900/50">
             <td class="p-2 truncate max-w-xs" title={list.id?.toString()}>{list.id}</td>
             <td class="p-2 truncate max-w-xs" title={list.url}>{list.url}</td>
+            <td class="p-2 text-center text-sm font-mono text-zinc-400">{list.interface || 'Default'}</td>
             <td class="p-2 text-center text-sm font-mono">{list.include_subdomains ? 'YES' : 'NO'}</td>
             <td class="p-2 text-sm text-zinc-400">{formatDate(list.last_updated)}</td>
             <td class="p-2 text-sm text-zinc-400">{list.update_interval_seconds}s</td>
@@ -138,7 +159,7 @@
         {/each}
         {#if lists.length === 0 && !loading}
           <tr>
-            <td colspan="5" class="p-12 text-center text-zinc-600 italic tracking-wide">No domain lists configured.</td>
+            <td colspan="6" class="p-12 text-center text-zinc-600 italic tracking-wide">No domain lists configured.</td>
           </tr>
         {/if}
       </tbody>

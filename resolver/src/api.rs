@@ -154,7 +154,7 @@ async fn add_domain_rule(
     State(app): State<Arc<App>>,
     Json(rule): Json<DomainRule>,
 ) -> Result<Json<String>, String> {
-    app.domain_controller().add_rule(&rule.domain, rule.include_subdomains).await
+    app.domain_controller().add_rule(&rule.domain, rule.include_subdomains, rule.interface).await
         .map(|_| Json("Domain rule added".to_string()))
         .map_err(|e| e.to_string())
 }
