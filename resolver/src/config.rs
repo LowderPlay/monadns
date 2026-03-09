@@ -31,6 +31,8 @@ pub struct Config {
     #[schema(value_type = String)]
     pub ipv6_subnet: Ipv6Net,
     pub upstream_resolver: UpstreamResolverConfig,
+    #[serde(default)]
+    pub export_enabled: bool,
 
     // Backwards compatibility fields
     #[serde(skip_serializing, default)]
@@ -60,6 +62,7 @@ impl Default for Config {
             ipv4_subnet: Ipv4Net::from_str("198.18.0.0/15").unwrap(),
             ipv6_subnet: Ipv6Net::from_str("fd32:bfcc:fba0:1337::/64").unwrap(),
             upstream_resolver: UpstreamResolverConfig::Quad9Https,
+            export_enabled: false,
             table_id: None,
             iface: None,
             tcp_mss_clamp: None,
@@ -78,6 +81,7 @@ pub struct PatchConfig {
     #[schema(value_type = Option<String>)]
     pub ipv6_subnet: Option<Ipv6Net>,
     pub upstream_resolver: Option<UpstreamResolverConfig>,
+    pub export_enabled: Option<bool>,
 }
 
 impl Config {
@@ -161,6 +165,7 @@ impl Config {
             ipv4_subnet: patch.ipv4_subnet.unwrap_or(self.ipv4_subnet),
             ipv6_subnet: patch.ipv6_subnet.unwrap_or(self.ipv6_subnet),
             upstream_resolver: patch.upstream_resolver.unwrap_or_else(|| self.upstream_resolver.clone()),
+            export_enabled: patch.export_enabled.unwrap_or(self.export_enabled),
             table_id: None,
             iface: None,
             tcp_mss_clamp: None,

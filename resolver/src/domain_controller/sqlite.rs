@@ -363,6 +363,28 @@ impl SqliteController {
         Ok(subnets)
     }
 
+    pub async fn get_all_domains(&self) -> anyhow::Result<Vec<String>> {
+        let mut domains = Vec::new();
+
+        // From domain_rules
+        let rules = self.list_rules().await?;
+        for rule in rules {
+            domains.push(rule.domain);
+        }
+
+        // From list_domains
+        let rows = sqlx::query("SELECT domain FROM list_domains")
+            .fetch_all(&self.pool)
+            .await?;
+
+        for row in rows {
+            let domain: String = row.get(0);
+            domains.push(domain);
+        }
+
+        Ok(domains)
+    }
+
     pub async fn update_metrics(&self) -> anyhow::Result<()> {
         let domain_rules: (i64,) = sqlx::query_as("SELECT COUNT(*) FROM domain_rules").fetch_one(&self.pool).await?;
         let domain_lists: (i64,) = sqlx::query_as("SELECT COUNT(*) FROM domain_lists").fetch_one(&self.pool).await?;

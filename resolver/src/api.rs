@@ -25,7 +25,8 @@ use crate::domain_controller::sqlite::{DomainRule, DomainList, IpRule, IpList};
         list_domain_rules, add_domain_rule, remove_domain_rule, 
         list_domain_lists, add_domain_list, remove_domain_list, sync_domain_list,
         list_ip_rules, add_ip_rule, remove_ip_rule,
-        list_ip_lists, add_ip_list, remove_ip_list, sync_ip_list
+        list_ip_lists, add_ip_list, remove_ip_list, sync_ip_list,
+        export_domains, export_ips
     ),
     components(schemas(Config, PatchConfig, UpstreamResolverConfig, DomainRule, DomainList, IpRule, IpList)),
     modifiers(&SecurityAddon),
@@ -88,8 +89,13 @@ pub fn create_router(app: Arc<App>) -> Router {
         .route("/ip-lists", get(list_ip_lists).post(add_ip_list))
         .route("/ip-lists/{id}", delete(remove_ip_list))
         .route("/ip-lists/{id}/sync", post(sync_ip_list))
-        .with_state(app)
+        .with_state(app.clone())
         .split_for_parts();
+
+    let export_routes = Router::new()
+        .route("/domains.lst", get(export_domains))
+        .route("/ips.lst", get(export_ips))
+        .with_state(app);
 
     let serve_assets = ServeEmbed::<FrontendDist>::new();
 
@@ -97,6 +103,7 @@ pub fn create_router(app: Arc<App>) -> Router {
 
     Router::new()
         .nest("/api", api_routes)
+        .nest("/api/export", export_routes)
         .merge(SwaggerUi::new("/swagger").url("/api-docs/openapi.json", openapi))
         .fallback_service(serve_assets)
 }
@@ -427,4 +434,62 @@ pub async fn sync_ip_list(
     });
 
     Ok(Json("IP list sync started".to_string()))
+}
+
+/// Export all domains as a .lst file
+#[utoipa::path(
+    get,
+    path = "/export/domains.lst",
+    responses(
+        (status = 200, description = "All enabled domains", body = String),
+        (status = 403, description = "Export disabled", body = String)
+    )
+)]
+async fn export_domains(
+    State(app): State<Arc<App>>,
+) -> impl IntoResponse {
+    let config = app.current_config();
+    if !config.export_enabled {
+        return (StatusCode::FORBIDDEN, "Export disabled").into_response();
+    }
+
+    match app.controller().get_all_domains().await {
+        Ok(domains) => {
+            let body = domains.join("\n");
+            (
+                [(axum::http::header::CONTENT_TYPE, "text/plain; charset=utf-8")],
+                body
+            ).into_response()
+        }
+        Err(e) => (StatusCode::INTERNAL_SERVER_ERROR, e.to_string()).into_response(),
+    }
+}
+
+/// Export all IP subnets as a .lst file
+#[utoipa::path(
+    get,
+    path = "/export/ips.lst",
+    responses(
+        (status = 200, description = "All enabled subnets", body = String),
+        (status = 403, description = "Export disabled", body = String)
+    )
+)]
+async fn export_ips(
+    State(app): State<Arc<App>>,
+) -> impl IntoResponse {
+    let config = app.current_config();
+    if !config.export_enabled {
+        return (StatusCode::FORBIDDEN, "Export disabled").into_response();
+    }
+
+    match app.controller().get_all_subnets().await {
+        Ok(subnets) => {
+            let body = subnets.into_iter().map(|(s, _)| s).collect::<Vec<_>>().join("\n");
+            (
+                [(axum::http::header::CONTENT_TYPE, "text/plain; charset=utf-8")],
+                body
+            ).into_response()
+        }
+        Err(e) => (StatusCode::INTERNAL_SERVER_ERROR, e.to_string()).into_response(),
+    }
 }

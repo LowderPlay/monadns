@@ -29,6 +29,7 @@ export interface Config {
   ipv4_subnet: string;
   ipv6_subnet: string;
   upstream_resolver: UpstreamResolverConfig;
+  export_enabled: boolean;
 }
 
 export interface PatchConfig {
@@ -37,6 +38,7 @@ export interface PatchConfig {
   ipv4_subnet?: string;
   ipv6_subnet?: string;
   upstream_resolver?: UpstreamResolverConfig;
+  export_enabled?: boolean;
 }
 
 export interface DomainRule {

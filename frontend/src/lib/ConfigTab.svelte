@@ -3,6 +3,7 @@
   import { api, type Config, type UpstreamResolverConfig, type ResolverProtocol } from './api';
   import { toast } from './toast_state.svelte';
   import Trash from "../assets/Trash.svelte";
+  import File from "../assets/File.svelte";
 
   let config = $state<Config | null>(null);
   let saving = $state(false);
@@ -141,6 +142,38 @@
       </div>
     </div>
 
+    <h2 class="text-xl font-bold border-b border-zinc-800 pb-2 mt-8">Export</h2>
+    <div class="grid grid-cols-1 md:grid-cols-2 gap-x-8 gap-y-6">
+      <div class="flex items-center gap-4 h-fit">
+        <input
+                id="export_enabled"
+                type="checkbox"
+                bind:checked={config.export_enabled}
+                class="w-5 h-5 border-zinc-700 bg-zinc-950 accent-white cursor-pointer"
+        />
+        <div class="space-y-1">
+          <label for="export_enabled" class="text-sm font-bold text-zinc-300">Public Rule Export</label>
+          <p class="text-xs text-zinc-500">Enable unauthenticated access to your active domain and IP rules as .lst files. (Make sure to save the config)</p>
+        </div>
+      </div>
+      {#if config.export_enabled}
+        <div class="flex flex-col gap-1">
+          <label for="ipv6_subnet" class="text-sm font-bold text-zinc-300">Download Lists</label>
+          <p class="text-xs text-zinc-500 mb-1">Below are permanent links to actual lists used in MonaDNS. You can use them for conditional routing</p>
+          <div class="pt-2 flex flex-col sm:flex-row gap-4">
+            <a href="/api/export/domains.lst" target="_blank" class="text-xs font-bold text-zinc-400 hover:text-white flex items-center gap-2 transition-colors">
+              <File/>
+              domains.lst
+            </a>
+            <a href="/api/export/ips.lst" target="_blank" class="text-xs font-bold text-zinc-400 hover:text-white flex items-center gap-2 transition-colors ">
+              <File/>
+              ips.lst
+            </a>
+          </div>
+        </div>
+      {/if}
+    </div>
+
     <!-- Custom Nameservers Section -->
     {#if config.upstream_resolver.type === 'Custom'}
       <div class="mt-8 border border-zinc-800 p-6 space-y-4">
@@ -199,7 +232,9 @@
         {#each config.interfaces as iface, i}
           <div class="border border-zinc-800 p-6 space-y-4 bg-zinc-950/30">
             <div class="flex items-center justify-between">
-              <h3 class="font-bold text-white uppercase tracking-widest text-xs">Interface: {iface.name}</h3>
+              <h3 class="font-bold text-white uppercase tracking-widest text-xs">
+                Interface: {iface.name} {#if iface.name === config.default_interface}(Default){/if}
+              </h3>
               <button onclick={() => removeInterface(i)} class="text-red-500 hover:text-red-400 p-2 transition-colors">
                 <Trash />
               </button>
