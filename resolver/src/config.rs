@@ -98,7 +98,6 @@ impl Config {
 
         let content = std::fs::read_to_string(&path)?;
         let mut config: Config = toml::from_str(&content)?;
-        println!("{:?}", config);
 
         // Migration logic for backwards compatibility
         if config.interfaces.is_empty() {
@@ -168,6 +167,24 @@ impl Config {
             ipv4_snat: None,
             ipv6_snat: None,
         }
+    }
+
+    pub fn resolve_interface(&self, interface_name: Option<&str>) -> &InterfaceConfig {
+        let name = match interface_name {
+            Some("default") | None => &self.default_interface,
+            Some(name) => name,
+        };
+
+        self.interfaces.iter()
+            .find(|i| i.name == *name)
+            .or_else(|| self.interfaces.iter().find(|i| i.name == self.default_interface))
+            .unwrap_or_else(|| {
+                if !self.interfaces.is_empty() {
+                    &self.interfaces[0]
+                } else {
+                    panic!("No interfaces configured")
+                }
+            })
     }
 }
 

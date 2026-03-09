@@ -42,6 +42,40 @@ pub struct IpList {
     pub interface: Option<String>,
 }
 
+#[async_trait]
+pub trait SyncableList: Send + Sync + for<'a> FromRow<'a, sqlx::sqlite::SqliteRow> + Unpin {
+    fn id(&self) -> Option<i64>;
+    fn url(&self) -> &str;
+    fn update_interval_seconds(&self) -> i64;
+    fn last_updated(&self) -> Option<DateTime<Utc>>;
+    fn table_name() -> &'static str;
+    fn entries_table_name() -> &'static str;
+    fn entry_column_name() -> &'static str;
+    fn process_line(line: &str) -> String;
+}
+
+impl SyncableList for DomainList {
+    fn id(&self) -> Option<i64> { self.id }
+    fn url(&self) -> &str { &self.url }
+    fn update_interval_seconds(&self) -> i64 { self.update_interval_seconds }
+    fn last_updated(&self) -> Option<DateTime<Utc>> { self.last_updated }
+    fn table_name() -> &'static str { "domain_lists" }
+    fn entries_table_name() -> &'static str { "list_domains" }
+    fn entry_column_name() -> &'static str { "domain" }
+    fn process_line(line: &str) -> String { line.trim().trim_end_matches('.').to_string() }
+}
+
+impl SyncableList for IpList {
+    fn id(&self) -> Option<i64> { self.id }
+    fn url(&self) -> &str { &self.url }
+    fn update_interval_seconds(&self) -> i64 { self.update_interval_seconds }
+    fn last_updated(&self) -> Option<DateTime<Utc>> { self.last_updated }
+    fn table_name() -> &'static str { "ip_lists" }
+    fn entries_table_name() -> &'static str { "list_ips" }
+    fn entry_column_name() -> &'static str { "subnet" }
+    fn process_line(line: &str) -> String { line.trim().to_string() }
+}
+
 pub struct SqliteController {
     pub(crate) pool: SqlitePool,
 }
@@ -76,10 +110,10 @@ impl SqliteController {
             let mut interval = tokio::time::interval(std::time::Duration::from_secs(60));
             loop {
                 interval.tick().await;
-                if let Err(e) = self.sync_domain_lists().await {
+                if let Err(e) = self.sync_lists::<DomainList>().await {
                     error!("Error syncing domain lists: {}", e);
                 }
-                if let Err(e) = self.sync_ip_lists().await {
+                if let Err(e) = self.sync_lists::<IpList>().await {
                     error!("Error syncing IP lists: {}", e);
                 }
             }
@@ -145,23 +179,29 @@ impl SqliteController {
         Ok(lists)
     }
 
-    pub async fn sync_list_by_id(&self, id: i64) -> anyhow::Result<()> {
-        let list = sqlx::query_as::<_, DomainList>("SELECT id, url, update_interval_seconds, include_subdomains, last_updated FROM domain_lists WHERE id = ?")
+    pub async fn sync_list_by_id_generic<T: SyncableList>(&self, id: i64) -> anyhow::Result<()> {
+        let query = format!("SELECT * FROM {} WHERE id = ?", T::table_name());
+        let list = sqlx::query_as(&query)
             .bind(id)
             .fetch_optional(&self.pool)
             .await?
-            .ok_or_else(|| anyhow::anyhow!("List with ID {} not found", id))?;
+            .ok_or_else(|| anyhow::anyhow!("List with ID {} not found in {}", id, T::table_name()))?;
 
         let client = reqwest::Client::new();
-        self.fetch_and_cache_list(&client, &list).await?;
+        self.fetch_and_cache_generic::<T>(&client, &list).await?;
 
-        sqlx::query("UPDATE domain_lists SET last_updated = ? WHERE id = ?")
+        let update_query = format!("UPDATE {} SET last_updated = ? WHERE id = ?", T::table_name());
+        sqlx::query(&update_query)
             .bind(Utc::now())
             .bind(id)
             .execute(&self.pool)
             .await?;
         
         Ok(())
+    }
+
+    pub async fn sync_list_by_id(&self, id: i64) -> anyhow::Result<()> {
+        self.sync_list_by_id_generic::<DomainList>(id).await
     }
 
     pub async fn add_ip_rule(&self, subnet: &str, interface: Option<String>) -> anyhow::Result<()> {
@@ -220,46 +260,35 @@ impl SqliteController {
     }
 
     pub async fn sync_ip_list_by_id(&self, id: i64) -> anyhow::Result<()> {
-        let list = sqlx::query_as::<_, IpList>("SELECT id, url, update_interval_seconds, last_updated, interface FROM ip_lists WHERE id = ?")
-            .bind(id)
-            .fetch_optional(&self.pool)
-            .await?
-            .ok_or_else(|| anyhow::anyhow!("IP List with ID {} not found", id))?;
-
-        let client = reqwest::Client::new();
-        self.fetch_and_cache_ip_list(&client, &list).await?;
-
-        sqlx::query("UPDATE ip_lists SET last_updated = ? WHERE id = ?")
-            .bind(Utc::now())
-            .bind(id)
-            .execute(&self.pool)
-            .await?;
-        
-        Ok(())
+        self.sync_list_by_id_generic::<IpList>(id).await
     }
 
-    async fn sync_domain_lists(&self) -> anyhow::Result<()> {
-        let lists = self.list_domain_lists().await?;
+    async fn sync_lists<T: SyncableList>(&self) -> anyhow::Result<()> {
+        let query = format!("SELECT * FROM {}", T::table_name());
+        let lists = sqlx::query_as::<_, T>(&query)
+            .fetch_all(&self.pool)
+            .await?;
         let client = reqwest::Client::new();
         
         for list in lists {
             let now = Utc::now();
-            let should_update = match list.last_updated {
+            let should_update = match list.last_updated() {
                 None => true,
-                Some(last) => (now - last).num_seconds() >= list.update_interval_seconds,
+                Some(last) => (now - last).num_seconds() >= list.update_interval_seconds(),
             };
 
             if should_update {
-                match self.fetch_and_cache_list(&client, &list).await {
+                match self.fetch_and_cache_generic::<T>(&client, &list).await {
                     Ok(_) => {
-                        sqlx::query("UPDATE domain_lists SET last_updated = ? WHERE id = ?")
+                        let update_query = format!("UPDATE {} SET last_updated = ? WHERE id = ?", T::table_name());
+                        sqlx::query(&update_query)
                             .bind(now)
-                            .bind(list.id)
+                            .bind(list.id())
                             .execute(&self.pool)
                             .await?;
                     }
                     Err(e) => {
-                        error!("Failed to sync list {}: {}", list.url, e);
+                        error!("Failed to sync list {}: {}", list.url(), e);
                     }
                 }
             }
@@ -267,57 +296,33 @@ impl SqliteController {
         Ok(())
     }
 
-    async fn sync_ip_lists(&self) -> anyhow::Result<()> {
-        let lists = self.list_ip_lists().await?;
-        let client = reqwest::Client::new();
-        
-        for list in lists {
-            let now = Utc::now();
-            let should_update = match list.last_updated {
-                None => true,
-                Some(last) => (now - last).num_seconds() >= list.update_interval_seconds,
-            };
-
-            if should_update {
-                match self.fetch_and_cache_ip_list(&client, &list).await {
-                    Ok(_) => {
-                        sqlx::query("UPDATE ip_lists SET last_updated = ? WHERE id = ?")
-                            .bind(now)
-                            .bind(list.id)
-                            .execute(&self.pool)
-                            .await?;
-                    }
-                    Err(e) => {
-                        error!("Failed to sync IP list {}: {}", list.url, e);
-                    }
-                }
-            }
-        }
-        Ok(())
-    }
-
-    async fn fetch_and_cache_list(&self, client: &reqwest::Client, list: &DomainList) -> anyhow::Result<()> {
-        let list_id = list.id.expect("List must have an ID");
-        info!("Syncing domain list {}", list_id);
+    async fn fetch_and_cache_generic<T: SyncableList>(&self, client: &reqwest::Client, list: &T) -> anyhow::Result<()> {
+        let list_id = list.id().expect("List must have an ID");
+        info!("Syncing {} list {}", T::entry_column_name(), list_id);
         let start = Instant::now();
-        let response = client.get(&list.url).send().await?.text().await?;
+        let response = client.get(list.url()).send().await?.text().await?;
         
         let mut tx = self.pool.begin().await?;
-        sqlx::query("DELETE FROM list_domains WHERE list_id = ?")
+        let delete_query = format!("DELETE FROM {} WHERE list_id = ?", T::entries_table_name());
+        sqlx::query(&delete_query)
             .bind(list_id)
             .execute(&mut *tx)
             .await?;
 
         let lines: Vec<String> = response.lines()
-            .map(|l| l.trim().trim_end_matches('.').to_string())
+            .map(T::process_line)
             .filter(|l| !l.is_empty() && !l.starts_with('#'))
             .collect();
 
         let mut count = 0;
         for chunk in lines.chunks(1000) {
-            let mut query_builder: sqlx::QueryBuilder<sqlx::Sqlite> = sqlx::QueryBuilder::new("INSERT INTO list_domains (domain, list_id) ");
-            query_builder.push_values(chunk, |mut b, domain| {
-                b.push_bind(domain)
+            let mut query_builder: sqlx::QueryBuilder<sqlx::Sqlite> = sqlx::QueryBuilder::new(format!(
+                "INSERT INTO {} ({}, list_id) ", 
+                T::entries_table_name(), 
+                T::entry_column_name()
+            ));
+            query_builder.push_values(chunk, |mut b, entry| {
+                b.push_bind(entry)
                  .push_bind(list_id);
             });
             query_builder.build().execute(&mut *tx).await?;
@@ -325,42 +330,9 @@ impl SqliteController {
         }
 
         tx.commit().await?;
-        info!("Successfully synced list {} in {:?}: {} entries", list_id, start.elapsed(), count);
-        metrics::gauge!("list_domain_count", "list_id" => list_id.to_string()).set(count as f64);
-        Ok(())
-    }
-
-    pub async fn fetch_and_cache_ip_list(&self, client: &reqwest::Client, list: &IpList) -> anyhow::Result<()> {
-        let list_id = list.id.expect("List must have an ID");
-        info!("Syncing IP list {}", list_id);
-        let start = Instant::now();
-        let response = client.get(&list.url).send().await?.text().await?;
-        
-        let mut tx = self.pool.begin().await?;
-        sqlx::query("DELETE FROM list_ips WHERE list_id = ?")
-            .bind(list_id)
-            .execute(&mut *tx)
-            .await?;
-
-        let lines: Vec<String> = response.lines()
-            .map(|l| l.trim().to_string())
-            .filter(|l| !l.is_empty() && !l.starts_with('#'))
-            .collect();
-
-        let mut count = 0;
-        for chunk in lines.chunks(1000) {
-            let mut query_builder: sqlx::QueryBuilder<sqlx::Sqlite> = sqlx::QueryBuilder::new("INSERT INTO list_ips (subnet, list_id) ");
-            query_builder.push_values(chunk, |mut b, subnet| {
-                b.push_bind(subnet)
-                 .push_bind(list_id);
-            });
-            query_builder.build().execute(&mut *tx).await?;
-            count += chunk.len();
-        }
-
-        tx.commit().await?;
-        info!("Successfully synced IP list {} in {:?}: {} entries", list_id, start.elapsed(), count);
-        metrics::gauge!("list_ip_count", "list_id" => list_id.to_string()).set(count as f64);
+        info!("Successfully synced {} list {} in {:?}: {} entries", T::entry_column_name(), list_id, start.elapsed(), count);
+        let metric_name = format!("list_{}_count", T::entry_column_name());
+        metrics::gauge!(metric_name, "list_id" => list_id.to_string()).set(count as f64);
         Ok(())
     }
 
@@ -409,6 +381,7 @@ impl SqliteController {
         Ok(())
     }
 }
+
 
 #[async_trait]
 impl DomainController for SqliteController {

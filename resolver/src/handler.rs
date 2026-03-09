@@ -71,14 +71,8 @@ impl RequestHandler for FakeIpHandler {
             }
         };
 
-        if let Some(mut interface_name) = state.domain_controller.should_intercept(&name).await {
-            if interface_name == "default" {
-                interface_name = state.config.default_interface.clone();
-            }
-
-            let iface_config = state.config.interfaces.iter().find(|i| i.name == interface_name)
-                .or_else(|| state.config.interfaces.iter().find(|i| i.name == state.config.default_interface))
-                .unwrap_or_else(|| &state.config.interfaces[0]);
+        if let Some(interface_name) = state.domain_controller.should_intercept(&name).await {
+            let iface_config = state.config.resolve_interface(Some(&interface_name));
             
             let fwmark = iface_config.fwmark;
             let actual_interface_name = &iface_config.name;

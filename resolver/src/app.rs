@@ -17,7 +17,6 @@ pub struct App {
     handler: FakeIpHandler,
     config: ArcSwap<Config>,
     controller: Arc<SqliteController>,
-    last_synced_subnets: Mutex<Vec<(String, u32)>>,
 }
 
 impl App {
@@ -31,7 +30,6 @@ impl App {
             handler,
             config: ArcSwap::from(Arc::new(config)),
             controller,
-            last_synced_subnets: Mutex::new(Vec::new()),
         };
         app.start_metrics_worker();
         app.start_subnet_sync_worker();
@@ -72,12 +70,8 @@ impl App {
                     Ok(subnets) => {
                         let mut sync_list = Vec::new();
                         for (subnet, interface) in subnets {
-                             let interface_name = interface.unwrap_or_else(|| state.config.default_interface.clone());
-                             if let Some(iface) = state.config.interfaces.iter().find(|i| i.name == interface_name) {
-                                 sync_list.push((subnet, iface.fwmark));
-                             } else if let Some(default_iface) = state.config.interfaces.iter().find(|i| i.name == state.config.default_interface) {
-                                 sync_list.push((subnet, default_iface.fwmark));
-                             }
+                             let iface = state.config.resolve_interface(interface.as_deref());
+                             sync_list.push((subnet, iface.fwmark));
                         }
 
                         let mut last = last_synced.lock().await;
@@ -118,12 +112,8 @@ impl App {
             Ok(subnets) => {
                 let mut sync_list = Vec::new();
                 for (subnet, interface) in subnets {
-                    let interface_name = interface.unwrap_or_else(|| config.default_interface.clone());
-                    if let Some(iface) = config.interfaces.iter().find(|i| i.name == interface_name) {
-                        sync_list.push((subnet, iface.fwmark));
-                    } else if let Some(default_iface) = config.interfaces.iter().find(|i| i.name == config.default_interface) {
-                        sync_list.push((subnet, default_iface.fwmark));
-                    }
+                    let iface = config.resolve_interface(interface.as_deref());
+                    sync_list.push((subnet, iface.fwmark));
                 }
                 if let Err(e) = route_controller.sync_subnets(sync_list).await {
                     error!("Failed to initial sync subnets to nftables: {}", e);
