@@ -17,6 +17,12 @@ This functionality provides a lightweight, transparent proxying mechanism akin t
 - **REST API**: Fully documented OpenAPI (Swagger) endpoints for programmatic management.
 - **Prometheus Metrics**: Built-in Prometheus exporter for monitoring DNS query metrics and traffic statistics.
 
+## Use Cases
+
+- **Direct Router Installation**: Install MonaDNS directly on a Linux-based router (e.g., OpenWrt) to provide transparent steering for all connected clients.
+- **Sidecar Gateway**: Run MonaDNS on a separate device (like a Raspberry Pi) in your network. Set the Fake IP subnets (`198.18.0.0/15` and `fd32:bfcc:fba0:1337::/64` by default) as static routes on your main router pointing to the MonaDNS device. Clients using MonaDNS as their DNS server will have their traffic automatically routed through it for configured domains.
+- **VPN Server Smart Routing**: Deploy MonaDNS on a VPN server (WireGuard, OpenVPN). By pushing MonaDNS as the DNS server to VPN clients, you can steer specific client traffic through different exit nodes or local interfaces based on the requested domain or destination IP.
+
 ## Architecture
 
 The project is structured into two main components:
