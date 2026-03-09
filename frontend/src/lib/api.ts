@@ -54,6 +54,19 @@ export interface DomainList {
   interface: string | null;
 }
 
+export interface IpRule {
+  subnet: string;
+  interface: string | null;
+}
+
+export interface IpList {
+  id?: number;
+  url: string;
+  update_interval_seconds: number;
+  last_updated: string | null;
+  interface: string | null;
+}
+
 async function request<T>(path: string, options: RequestInit = {}): Promise<T> {
   const headers = new Headers(options.headers);
   if (auth.key) {
@@ -93,4 +106,13 @@ export const api = {
   addList: (list: DomainList) => request<string>('/api/lists', { method: 'POST', body: JSON.stringify(list) }),
   removeList: (id: number) => request<string>(`/api/lists/${id}`, { method: 'DELETE' }),
   syncList: (id: number) => request<string>(`/api/lists/${id}/sync`, { method: 'POST' }),
+
+  getIps: () => request<IpRule[]>('/api/ips'),
+  addIp: (rule: IpRule) => request<string>('/api/ips', { method: 'POST', body: JSON.stringify(rule) }),
+  removeIp: (subnet: string) => request<string>(`/api/ips/${encodeURIComponent(subnet)}`, { method: 'DELETE' }),
+
+  getIpLists: () => request<IpList[]>('/api/ip-lists'),
+  addIpList: (list: IpList) => request<string>('/api/ip-lists', { method: 'POST', body: JSON.stringify(list) }),
+  removeIpList: (id: number) => request<string>(`/api/ip-lists/${id}`, { method: 'DELETE' }),
+  syncIpList: (id: number) => request<string>(`/api/ip-lists/${id}/sync`, { method: 'POST' }),
 };

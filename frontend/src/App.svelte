@@ -2,18 +2,22 @@
   import ConfigTab from './lib/ConfigTab.svelte';
   import DomainListsTab from './lib/DomainListsTab.svelte';
   import DomainsTab from './lib/DomainsTab.svelte';
+  import IpListsTab from './lib/IpListsTab.svelte';
+  import IpRulesTab from './lib/IpRulesTab.svelte';
   import Toast from "./lib/Toast.svelte";
   import Icon from "./assets/Icon.svelte";
   import LoginOverlay from "./lib/LoginOverlay.svelte";
   import { auth } from "./lib/auth_state.svelte";
 
-  type Tab = 'config' | 'lists' | 'domains';
+  type Tab = 'config' | 'lists' | 'domains' | 'ip-lists' | 'ip-rules';
   let activeTab = $state<Tab>('config');
 
   const tabs: { id: Tab; label: string }[] = [
     { id: 'config', label: 'Configuration' },
     { id: 'lists', label: 'Domain Lists' },
     { id: 'domains', label: 'Domains' },
+    { id: 'ip-lists', label: 'IP Lists' },
+    { id: 'ip-rules', label: 'IP Rules' },
   ];
 </script>
 
@@ -36,11 +40,11 @@
     </header>
 
     <!-- Navigation -->
-    <nav class="flex border-b border-zinc-800 mb-8">
+    <nav class="flex border-b border-zinc-800 mb-8 overflow-x-auto">
       {#each tabs as tab}
         <button
           onclick={() => activeTab = tab.id}
-          class="px-6 py-3 font-bold transition-colors relative {activeTab === tab.id ? 'text-white' : 'text-zinc-500 hover:text-zinc-300'}"
+          class="px-6 py-3 font-bold transition-colors relative whitespace-nowrap {activeTab === tab.id ? 'text-white' : 'text-zinc-500 hover:text-zinc-300'}"
         >
           {tab.label}
           {#if activeTab === tab.id}
@@ -58,6 +62,10 @@
         <DomainListsTab />
       {:else if activeTab === 'domains'}
         <DomainsTab />
+      {:else if activeTab === 'ip-lists'}
+        <IpListsTab />
+      {:else if activeTab === 'ip-rules'}
+        <IpRulesTab />
       {/if}
     </main>
 

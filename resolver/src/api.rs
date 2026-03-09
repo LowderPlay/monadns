@@ -16,12 +16,18 @@ use utoipa_swagger_ui::SwaggerUi;
 use frontend::FrontendDist;
 use crate::app::App;
 use crate::config::{Config, PatchConfig, UpstreamResolverConfig};
-use crate::domain_controller::sqlite::{DomainRule, DomainList};
+use crate::domain_controller::sqlite::{DomainRule, DomainList, IpRule, IpList};
 
 #[derive(OpenApi)]
 #[openapi(
-    paths(get_config, patch_config, list_domain_rules, add_domain_rule, remove_domain_rule, list_domain_lists, add_domain_list, remove_domain_list, sync_domain_list),
-    components(schemas(Config, PatchConfig, UpstreamResolverConfig, DomainRule, DomainList)),
+    paths(
+        get_config, patch_config, 
+        list_domain_rules, add_domain_rule, remove_domain_rule, 
+        list_domain_lists, add_domain_list, remove_domain_list, sync_domain_list,
+        list_ip_rules, add_ip_rule, remove_ip_rule,
+        list_ip_lists, add_ip_list, remove_ip_list, sync_ip_list
+    ),
+    components(schemas(Config, PatchConfig, UpstreamResolverConfig, DomainRule, DomainList, IpRule, IpList)),
     modifiers(&SecurityAddon),
     security(
         ("api_key" = [])
@@ -77,6 +83,11 @@ pub fn create_router(app: Arc<App>) -> Router {
         .route("/lists", get(list_domain_lists).post(add_domain_list))
         .route("/lists/{id}", delete(remove_domain_list))
         .route("/lists/{id}/sync", post(sync_domain_list))
+        .route("/ips", get(list_ip_rules).post(add_ip_rule))
+        .route("/ips/{*subnet}", delete(remove_ip_rule))
+        .route("/ip-lists", get(list_ip_lists).post(add_ip_list))
+        .route("/ip-lists/{id}", delete(remove_ip_list))
+        .route("/ip-lists/{id}/sync", post(sync_ip_list))
         .with_state(app)
         .split_for_parts();
 
@@ -135,7 +146,7 @@ async fn patch_config(
 async fn list_domain_rules(
     State(app): State<Arc<App>>,
 ) -> Result<Json<Vec<DomainRule>>, String> {
-    app.domain_controller().list_rules().await
+    app.controller().list_rules().await
         .map(Json)
         .map_err(|e| e.to_string())
 }
@@ -154,7 +165,7 @@ async fn add_domain_rule(
     State(app): State<Arc<App>>,
     Json(rule): Json<DomainRule>,
 ) -> Result<Json<String>, String> {
-    app.domain_controller().add_rule(&rule.domain, rule.include_subdomains, rule.interface).await
+    app.controller().add_rule(&rule.domain, rule.include_subdomains, rule.interface).await
         .map(|_| Json("Domain rule added".to_string()))
         .map_err(|e| e.to_string())
 }
@@ -175,7 +186,7 @@ async fn remove_domain_rule(
     State(app): State<Arc<App>>,
     Path(domain): Path<String>,
 ) -> Result<Json<String>, String> {
-    app.domain_controller().remove_rule(&domain).await
+    app.controller().remove_rule(&domain).await
         .map(|_| Json("Domain rule removed".to_string()))
         .map_err(|e| e.to_string())
 }
@@ -191,7 +202,7 @@ async fn remove_domain_rule(
 async fn list_domain_lists(
     State(app): State<Arc<App>>,
 ) -> Result<Json<Vec<DomainList>>, String> {
-    app.domain_controller().list_domain_lists().await
+    app.controller().list_domain_lists().await
         .map(Json)
         .map_err(|e| e.to_string())
 }
@@ -210,12 +221,13 @@ async fn add_domain_list(
     State(app): State<Arc<App>>,
     Json(list): Json<DomainList>,
 ) -> Result<Json<String>, String> {
-    let list_id = app.domain_controller().add_domain_list(list).await
+    let list_id = app.controller().add_domain_list(list).await
         .map_err(|e| e.to_string())?;
 
+    let controller = app.controller();
     tokio::spawn(async move {
         // Update after added
-        if let Err(e) = app.domain_controller().sync_list_by_id(list_id).await {
+        if let Err(e) = controller.sync_list_by_id(list_id).await {
             error!("Failed to initial sync for list {}: {}", list_id, e);
         }
     });
@@ -239,7 +251,7 @@ async fn remove_domain_list(
     State(app): State<Arc<App>>,
     Path(id): Path<i64>,
 ) -> Result<Json<String>, String> {
-    app.domain_controller().remove_domain_list(id).await
+    app.controller().remove_domain_list(id).await
         .map(|_| Json("Domain list removed".to_string()))
         .map_err(|e| e.to_string())
 }
@@ -260,11 +272,159 @@ pub async fn sync_domain_list(
     State(app): State<Arc<App>>,
     Path(id): Path<i64>,
 ) -> Result<Json<String>, String> {
+    let controller = app.controller();
     tokio::spawn(async move {
-        if let Err(e) = app.domain_controller().sync_list_by_id(id).await {
+        if let Err(e) = controller.sync_list_by_id(id).await {
             error!("Failed to sync list {}: {}", id, e);
         }
     });
 
     Ok(Json("Domain list sync started".to_string()))
+}
+
+/// List all IP rules
+#[utoipa::path(
+    get,
+    path = "/ips",
+    responses(
+        (status = 200, description = "List of IP rules", body = [IpRule])
+    )
+)]
+async fn list_ip_rules(
+    State(app): State<Arc<App>>,
+) -> Result<Json<Vec<IpRule>>, String> {
+    app.controller().list_ip_rules().await
+        .map(Json)
+        .map_err(|e| e.to_string())
+}
+
+/// Add or update an IP rule
+#[utoipa::path(
+    post,
+    path = "/ips",
+    request_body = IpRule,
+    responses(
+        (status = 200, description = "IP rule added or updated", body = String),
+        (status = 500, description = "Failed to add IP rule", body = String)
+    )
+)]
+async fn add_ip_rule(
+    State(app): State<Arc<App>>,
+    Json(rule): Json<IpRule>,
+) -> Result<Json<String>, String> {
+    app.controller().add_ip_rule(&rule.subnet, rule.interface).await
+        .map(|_| Json("IP rule added".to_string()))
+        .map_err(|e| e.to_string())
+}
+
+/// Remove an IP rule
+#[utoipa::path(
+    delete,
+    path = "/ips/{subnet}",
+    params(
+        ("subnet" = String, Path, description = "Subnet to remove")
+    ),
+    responses(
+        (status = 200, description = "IP rule removed", body = String),
+        (status = 500, description = "Failed to remove IP rule", body = String)
+    )
+)]
+async fn remove_ip_rule(
+    State(app): State<Arc<App>>,
+    Path(subnet): Path<String>,
+) -> Result<Json<String>, String> {
+    app.controller().remove_ip_rule(&subnet).await
+        .map(|_| Json("IP rule removed".to_string()))
+        .map_err(|e| e.to_string())
+}
+
+/// List all IP lists
+#[utoipa::path(
+    get,
+    path = "/ip-lists",
+    responses(
+        (status = 200, description = "List of IP lists", body = [IpList])
+    )
+)]
+async fn list_ip_lists(
+    State(app): State<Arc<App>>,
+) -> Result<Json<Vec<IpList>>, String> {
+    app.controller().list_ip_lists().await
+        .map(Json)
+        .map_err(|e| e.to_string())
+}
+
+/// Add an IP list
+#[utoipa::path(
+    post,
+    path = "/ip-lists",
+    request_body = IpList,
+    responses(
+        (status = 200, description = "IP list added", body = String),
+        (status = 500, description = "Failed to add IP list", body = String)
+    )
+)]
+async fn add_ip_list(
+    State(app): State<Arc<App>>,
+    Json(list): Json<IpList>,
+) -> Result<Json<String>, String> {
+    let list_id = app.controller().add_ip_list(list).await
+        .map_err(|e| e.to_string())?;
+
+    let controller = app.controller();
+    tokio::spawn(async move {
+        // Update after added
+        if let Err(e) = controller.sync_ip_list_by_id(list_id).await {
+            error!("Failed to initial sync for IP list {}: {}", list_id, e);
+        }
+    });
+
+    Ok(Json(format!("IP list added with id {}", list_id)))
+}
+
+/// Remove an IP list
+#[utoipa::path(
+    delete,
+    path = "/ip-lists/{id}",
+    params(
+        ("id" = i64, Path, description = "ID of the IP list to remove")
+    ),
+    responses(
+        (status = 200, description = "IP list removed", body = String),
+        (status = 500, description = "Failed to remove IP list", body = String)
+    )
+)]
+async fn remove_ip_list(
+    State(app): State<Arc<App>>,
+    Path(id): Path<i64>,
+) -> Result<Json<String>, String> {
+    app.controller().remove_ip_list(id).await
+        .map(|_| Json("IP list removed".to_string()))
+        .map_err(|e| e.to_string())
+}
+
+/// Sync an IP list
+#[utoipa::path(
+    post,
+    path = "/ip-lists/{id}/sync",
+    params(
+        ("id" = i64, Path, description = "ID of the IP list to sync")
+    ),
+    responses(
+        (status = 200, description = "IP list sync started", body = String),
+        (status = 500, description = "Failed to sync IP list", body = String)
+    )
+)]
+pub async fn sync_ip_list(
+    State(app): State<Arc<App>>,
+    Path(id): Path<i64>,
+) -> Result<Json<String>, String> {
+    let controller = app.controller();
+    tokio::spawn(async move {
+        if let Err(e) = controller.sync_ip_list_by_id(id).await {
+            error!("Failed to sync IP list {}: {}", id, e);
+        }
+    });
+
+    Ok(Json("IP list sync started".to_string()))
 }

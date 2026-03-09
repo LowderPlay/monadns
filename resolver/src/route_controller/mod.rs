@@ -8,6 +8,7 @@ pub trait RouteController: Send + Sync {
     async fn add_mapping(&self, fake_ip: IpAddr, real_ip: IpAddr, fwmark: u32) -> anyhow::Result<()>;
     async fn cleanup(&self) -> anyhow::Result<()>;
     async fn fetch_metrics(&self) -> anyhow::Result<()>;
+    async fn sync_subnets(&self, subnets: Vec<(String, u32)>) -> anyhow::Result<()>;
 }
 
 #[derive(Clone)]
@@ -26,6 +27,11 @@ impl RouteController for DummyRouteController {
     }
 
     async fn fetch_metrics(&self) -> anyhow::Result<()> {
+        Ok(())
+    }
+
+    async fn sync_subnets(&self, subnets: Vec<(String, u32)>) -> anyhow::Result<()> {
+        println!("syncing {} subnets", subnets.len());
         Ok(())
     }
 }

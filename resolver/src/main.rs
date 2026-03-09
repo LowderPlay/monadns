@@ -12,6 +12,7 @@ use env_logger::Env;
 use hickory_server::ServerFuture;
 use log::info;
 use tokio::net::UdpSocket;
+use tokio::signal::unix::{signal, SignalKind};
 use crate::app::App;
 use crate::config::Config;
 
@@ -40,6 +41,8 @@ async fn main() -> anyhow::Result<()> {
 
     let listener = tokio::net::TcpListener::bind(Config::get_http_bind()).await?;
     info!("listening on {}", listener.local_addr()?);
+    let mut sigterm = signal(SignalKind::terminate())?;
+    let mut sigint = signal(SignalKind::interrupt())?;
 
     tokio::select! {
         res = server.block_until_done() => {
@@ -48,8 +51,11 @@ async fn main() -> anyhow::Result<()> {
         _ = axum::serve(listener, api_app) => {
             info!("API server stopped");
         }
-        _ = tokio::signal::ctrl_c() => {
+        _ = sigint.recv() => {
             info!("received SIGINT");
+        }
+        _ = sigterm.recv() => {
+            info!("received SIGTERM");
         }
     }
 

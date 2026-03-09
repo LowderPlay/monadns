@@ -27,11 +27,26 @@ pub struct DomainList {
     pub interface: Option<String>,
 }
 
-pub struct SqliteDomainController {
+#[derive(Debug, Serialize, Deserialize, FromRow, ToSchema)]
+pub struct IpRule {
+    pub subnet: String,
+    pub interface: Option<String>,
+}
+
+#[derive(Debug, Serialize, Deserialize, FromRow, ToSchema)]
+pub struct IpList {
+    pub id: Option<i64>,
+    pub url: String,
+    pub update_interval_seconds: i64,
+    pub last_updated: Option<DateTime<Utc>>,
+    pub interface: Option<String>,
+}
+
+pub struct SqliteController {
     pub(crate) pool: SqlitePool,
 }
 
-impl SqliteDomainController {
+impl SqliteController {
     pub async fn new(db_path: PathBuf) -> anyhow::Result<Self> {
         if let Some(parent) = db_path.parent() {
             if !parent.exists() {
@@ -52,7 +67,7 @@ impl SqliteDomainController {
             .run(&pool)
             .await?;
 
-        info!("SQLite domain controller initialized");
+        info!("SQLite controller initialized");
         Ok(Self { pool })
     }
 
@@ -63,6 +78,9 @@ impl SqliteDomainController {
                 interval.tick().await;
                 if let Err(e) = self.sync_domain_lists().await {
                     error!("Error syncing domain lists: {}", e);
+                }
+                if let Err(e) = self.sync_ip_lists().await {
+                    error!("Error syncing IP lists: {}", e);
                 }
             }
         });
@@ -146,6 +164,80 @@ impl SqliteDomainController {
         Ok(())
     }
 
+    pub async fn add_ip_rule(&self, subnet: &str, interface: Option<String>) -> anyhow::Result<()> {
+        sqlx::query(
+            "INSERT OR REPLACE INTO ip_rules (subnet, interface) VALUES (?, ?)"
+        )
+        .bind(subnet)
+        .bind(interface)
+        .execute(&self.pool)
+        .await?;
+        Ok(())
+    }
+
+    pub async fn remove_ip_rule(&self, subnet: &str) -> anyhow::Result<()> {
+        sqlx::query("DELETE FROM ip_rules WHERE subnet = ?")
+            .bind(subnet)
+            .execute(&self.pool)
+            .await?;
+        Ok(())
+    }
+
+    pub async fn list_ip_rules(&self) -> anyhow::Result<Vec<IpRule>> {
+        let rules = sqlx::query_as::<_, IpRule>("SELECT subnet, interface FROM ip_rules")
+            .fetch_all(&self.pool)
+            .await?;
+        Ok(rules)
+    }
+
+    pub async fn add_ip_list(&self, list: IpList) -> anyhow::Result<i64> {
+        let res = sqlx::query(
+            "INSERT INTO ip_lists (url, update_interval_seconds, interface) VALUES (?, ?, ?)"
+        )
+        .bind(&list.url)
+        .bind(list.update_interval_seconds)
+        .bind(list.interface)
+        .execute(&self.pool)
+        .await?;
+        let id = res.last_insert_rowid();
+        
+        Ok(id)
+    }
+
+    pub async fn remove_ip_list(&self, id: i64) -> anyhow::Result<()> {
+        sqlx::query("DELETE FROM ip_lists WHERE id = ?")
+            .bind(id)
+            .execute(&self.pool)
+            .await?;
+        Ok(())
+    }
+
+    pub async fn list_ip_lists(&self) -> anyhow::Result<Vec<IpList>> {
+        let lists = sqlx::query_as::<_, IpList>("SELECT id, url, update_interval_seconds, last_updated, interface FROM ip_lists")
+            .fetch_all(&self.pool)
+            .await?;
+        Ok(lists)
+    }
+
+    pub async fn sync_ip_list_by_id(&self, id: i64) -> anyhow::Result<()> {
+        let list = sqlx::query_as::<_, IpList>("SELECT id, url, update_interval_seconds, last_updated, interface FROM ip_lists WHERE id = ?")
+            .bind(id)
+            .fetch_optional(&self.pool)
+            .await?
+            .ok_or_else(|| anyhow::anyhow!("IP List with ID {} not found", id))?;
+
+        let client = reqwest::Client::new();
+        self.fetch_and_cache_ip_list(&client, &list).await?;
+
+        sqlx::query("UPDATE ip_lists SET last_updated = ? WHERE id = ?")
+            .bind(Utc::now())
+            .bind(id)
+            .execute(&self.pool)
+            .await?;
+        
+        Ok(())
+    }
+
     async fn sync_domain_lists(&self) -> anyhow::Result<()> {
         let lists = self.list_domain_lists().await?;
         let client = reqwest::Client::new();
@@ -175,9 +267,38 @@ impl SqliteDomainController {
         Ok(())
     }
 
+    async fn sync_ip_lists(&self) -> anyhow::Result<()> {
+        let lists = self.list_ip_lists().await?;
+        let client = reqwest::Client::new();
+        
+        for list in lists {
+            let now = Utc::now();
+            let should_update = match list.last_updated {
+                None => true,
+                Some(last) => (now - last).num_seconds() >= list.update_interval_seconds,
+            };
+
+            if should_update {
+                match self.fetch_and_cache_ip_list(&client, &list).await {
+                    Ok(_) => {
+                        sqlx::query("UPDATE ip_lists SET last_updated = ? WHERE id = ?")
+                            .bind(now)
+                            .bind(list.id)
+                            .execute(&self.pool)
+                            .await?;
+                    }
+                    Err(e) => {
+                        error!("Failed to sync IP list {}: {}", list.url, e);
+                    }
+                }
+            }
+        }
+        Ok(())
+    }
+
     async fn fetch_and_cache_list(&self, client: &reqwest::Client, list: &DomainList) -> anyhow::Result<()> {
         let list_id = list.id.expect("List must have an ID");
-        info!("Syncing domain list {}", list.id.unwrap());
+        info!("Syncing domain list {}", list_id);
         let start = Instant::now();
         let response = client.get(&list.url).send().await?.text().await?;
         
@@ -208,10 +329,89 @@ impl SqliteDomainController {
         metrics::gauge!("list_domain_count", "list_id" => list_id.to_string()).set(count as f64);
         Ok(())
     }
+
+    pub async fn fetch_and_cache_ip_list(&self, client: &reqwest::Client, list: &IpList) -> anyhow::Result<()> {
+        let list_id = list.id.expect("List must have an ID");
+        info!("Syncing IP list {}", list_id);
+        let start = Instant::now();
+        let response = client.get(&list.url).send().await?.text().await?;
+        
+        let mut tx = self.pool.begin().await?;
+        sqlx::query("DELETE FROM list_ips WHERE list_id = ?")
+            .bind(list_id)
+            .execute(&mut *tx)
+            .await?;
+
+        let lines: Vec<String> = response.lines()
+            .map(|l| l.trim().to_string())
+            .filter(|l| !l.is_empty() && !l.starts_with('#'))
+            .collect();
+
+        let mut count = 0;
+        for chunk in lines.chunks(1000) {
+            let mut query_builder: sqlx::QueryBuilder<sqlx::Sqlite> = sqlx::QueryBuilder::new("INSERT INTO list_ips (subnet, list_id) ");
+            query_builder.push_values(chunk, |mut b, subnet| {
+                b.push_bind(subnet)
+                 .push_bind(list_id);
+            });
+            query_builder.build().execute(&mut *tx).await?;
+            count += chunk.len();
+        }
+
+        tx.commit().await?;
+        info!("Successfully synced IP list {} in {:?}: {} entries", list_id, start.elapsed(), count);
+        metrics::gauge!("list_ip_count", "list_id" => list_id.to_string()).set(count as f64);
+        Ok(())
+    }
+
+    pub async fn get_all_subnets(&self) -> anyhow::Result<Vec<(String, Option<String>)>> {
+        let mut subnets = Vec::new();
+
+        // From ip_rules
+        let rules = self.list_ip_rules().await?;
+        for rule in rules {
+            subnets.push((rule.subnet, rule.interface));
+        }
+
+        // From ip_lists
+        let rows = sqlx::query(
+            "SELECT list_ips.subnet, ip_lists.interface 
+             FROM list_ips 
+             JOIN ip_lists ON list_ips.list_id = ip_lists.id"
+        )
+        .fetch_all(&self.pool)
+        .await?;
+
+        for row in rows {
+            let subnet: String = row.get(0);
+            let interface: Option<String> = row.get(1);
+            subnets.push((subnet, interface));
+        }
+
+        Ok(subnets)
+    }
+
+    pub async fn update_metrics(&self) -> anyhow::Result<()> {
+        let domain_rules: (i64,) = sqlx::query_as("SELECT COUNT(*) FROM domain_rules").fetch_one(&self.pool).await?;
+        let domain_lists: (i64,) = sqlx::query_as("SELECT COUNT(*) FROM domain_lists").fetch_one(&self.pool).await?;
+        let ip_rules: (i64,) = sqlx::query_as("SELECT COUNT(*) FROM ip_rules").fetch_one(&self.pool).await?;
+        let ip_lists: (i64,) = sqlx::query_as("SELECT COUNT(*) FROM ip_lists").fetch_one(&self.pool).await?;
+        let total_list_ips: (i64,) = sqlx::query_as("SELECT COUNT(*) FROM list_ips").fetch_one(&self.pool).await?;
+        let total_list_domains: (i64,) = sqlx::query_as("SELECT COUNT(*) FROM list_domains").fetch_one(&self.pool).await?;
+
+        metrics::gauge!("total_domain_rules_count").set(domain_rules.0 as f64);
+        metrics::gauge!("total_domain_lists_count").set(domain_lists.0 as f64);
+        metrics::gauge!("total_ip_rules_count").set(ip_rules.0 as f64);
+        metrics::gauge!("total_ip_lists_count").set(ip_lists.0 as f64);
+        metrics::gauge!("total_list_ips_count").set(total_list_ips.0 as f64);
+        metrics::gauge!("total_list_domains_count").set(total_list_domains.0 as f64);
+
+        Ok(())
+    }
 }
 
 #[async_trait]
-impl DomainController for SqliteDomainController {
+impl DomainController for SqliteController {
     async fn should_intercept(&self, domain: &str) -> Option<String> {
         let domain = domain.trim_end_matches('.');
         let mut check_domains = vec![domain.to_string()];
