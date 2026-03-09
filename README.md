@@ -7,13 +7,15 @@ This functionality provides a lightweight, transparent proxying mechanism akin t
 ## Features
 
 - **Fake IP DNS Resolution**: Intercepts DNS requests for specified domains and returns dynamically allocated IPv4 and IPv6 addresses from a configured subnet.
-- **Transparent Traffic Steering**: Automatically maintains `nftables` chains and `ip rules` to mark and route traffic destined to the allocated Fake IPs through a designated interface and routing table.
-- **Automated NAT/Masquerade**: Optionally applies SNAT or Masquerade to the steered traffic.
+- **Multi-Interface Traffic Steering**: Automatically maintains `nftables` chains and `ip rules` to mark and route traffic destined to the allocated Fake IPs through multiple designated interfaces and routing tables.
+- **IP-based Steering**: Beyond DNS-based steering, MonaDNS can also steer traffic based on destination IP subnets.
+- **Automated NAT/Masquerade**: Optionally applies SNAT or Masquerade to the steered traffic per interface.
+- **TCP MSS Clamping**: Built-in support for MSS clamping to prevent fragmentation issues on tunnel interfaces (e.g., WireGuard).
 - **Upstream DNS Support**: Resolves non-intercepted domains via standard upstream resolvers including Quad9, Cloudflare, Google, or custom servers via UDP, DNS-over-TLS (DoT), or DNS-over-HTTPS (DoH).
-- **Domain Lists Management**: Supports adding individual domains or syncing domain lists from external sources.
-- **Integrated Web Interface**: A modern web UI built with Svelte 5 and TailwindCSS for managing configuration, domains, and lists.
+- **Domain & IP Lists Management**: Supports adding individual domains/subnets or syncing lists from external sources.
+- **Integrated Web Interface**: A modern web UI built with Svelte 5 and TailwindCSS for managing configuration, domains, IPs, and lists.
 - **REST API**: Fully documented OpenAPI (Swagger) endpoints for programmatic management.
-- **Prometheus Metrics**: Built-in Prometheus exporter for monitoring DNS query metrics.
+- **Prometheus Metrics**: Built-in Prometheus exporter for monitoring DNS query metrics and traffic statistics.
 
 ## Architecture
 
@@ -22,30 +24,36 @@ The project is structured into two main components:
 ### Backend (`resolver/`)
 A high-performance Rust application built with `hickory-dns` (for DNS handling), `axum` (for the HTTP API), and `nftables` / `rtnetlink` (for Linux network management).
 - Serves as the primary DNS server.
+- Manages multiple egress interfaces using `fwmark` and custom routing tables.
 - Embeds and serves the pre-built Svelte frontend.
 - Stores state and rules in an SQLite database.
 - Modifies Linux networking state (requires appropriate capabilities, e.g., `CAP_NET_ADMIN` or `root`).
 
 ### Frontend (`frontend/`)
-A Single Page Application (SPA) built with Svelte 5 and Vite. It interacts with the backend REST API to allow users to manage the DNS rules, domain subscriptions, and core network configurations.
+A Single Page Application (SPA) built with Svelte 5 and Vite. It interacts with the backend REST API to allow users to manage the DNS rules, IP rules, subscriptions, and core network configurations.
 
 ## Requirements
 
 - **Linux OS**: MonaDNS heavily relies on Linux-specific networking APIs (`nftables` and `rtnetlink`).
 - **Root Privileges / Capabilities**: Running the backend requires root access or `CAP_NET_ADMIN` to manipulate network interfaces, routing tables, and firewall rules.
-- **Add a default route**: The steered packets are routed to IP table `100` (by default, can be changed in UI). Make sure that you add a rule to route packets to a specific interface:
+- **Routing Tables**: For each interface you want to steer traffic through, you must ensure a default route exists in the corresponding routing table.
+  For example, if you use interface `wg0` with table `100`:
   ```bash
-  sudo ip route add default dev wg0 table 100 # replace wg0 with the interface
+  sudo ip route add default dev wg0 table 100
   ```
-  If you use wg-quick, you can set `Table = 100` to add the route automatically.
-```bash
-sudo sysctl -w net.ipv4.conf.all.rp_filter=0 # Disable reverse path filtering
-sudo sysctl -w net.ipv4.ip_forward=1 # Enable forwarding (if you want to 
-```
+  If you use `wg-quick`, you can set `Table = 100` in your Wireguard configuration to add the route automatically.
 
-## Environment Variables
+- **System Settings**:
+  ```bash
+  sudo sysctl -w net.ipv4.conf.all.rp_filter=0 # Disable reverse path filtering
+  sudo sysctl -w net.ipv4.ip_forward=1 # Enable forwarding
+  ```
 
-The backend can be configured via several environment variables:
+## Configuration
+
+MonaDNS can be configured via environment variables and a TOML configuration file.
+
+### Environment Variables
 
 | Variable               | Description                                                   | Default                    |
 |:-----------------------|:--------------------------------------------------------------|:---------------------------|
@@ -55,6 +63,45 @@ The backend can be configured via several environment variables:
 | `MONADNS_HTTP_BIND`    | Address and port to bind the HTTP API / UI                    | `[::]:8080`                |
 | `MONADNS_METRICS_BIND` | Optional address to bind the Prometheus exporter              | *(Disabled)*               |
 | `MONADNS_API_PASSWORD` | Optional password for configuration (uses `X-Api-Key` header) | *(Disabled, no password)*  |
+
+### Configuration File (`config.toml`)
+
+The configuration file defines the network interfaces, subnets for Fake IPs, and upstream DNS resolvers.
+This configuration is fully editable via the Web UI.
+
+```toml
+default_interface = "wg0"
+ipv4_subnet = "198.18.0.0/15"
+ipv6_subnet = "fd32:bfcc:fba0:1337::/64"
+export_enabled = false
+
+[[interfaces]]
+name = "wg0"
+fwmark = 1
+table_id = 100
+tcp_mss_clamp = 1280
+ipv4_snat = "10.10.10.4"
+
+[[interfaces]]
+name = "eth0"
+fwmark = 2
+table_id = 101
+
+[upstream_resolver]
+type = "Quad9Https"
+```
+
+#### Upstream Resolver Types
+- `Quad9Https`, `CloudflareHttps`, `GoogleHttps`
+- `Custom`:
+  ```toml
+  [upstream_resolver]
+  type = "Custom"
+  nameservers = [
+    { addr = "1.1.1.1", protocol = "Plain" },
+    { addr = "8.8.8.8", protocol = "Tls", tls_dns_name = "dns.google" }
+  ]
+  ```
 
 ## API & Documentation
 
