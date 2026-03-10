@@ -6,7 +6,9 @@ use hickory_server::server::{Request, RequestHandler, ResponseHandler, ResponseI
 use hickory_proto::op::{Header, ResponseCode};
 use hickory_server::authority::MessageResponseBuilder;
 use hickory_proto::ProtoErrorKind;
-use hickory_proto::rr::{rdata, RData};
+use hickory_proto::rr::{rdata, IntoName, RData};
+use hickory_proto::rr::rdata::{A, AAAA, HTTPS, SVCB};
+use hickory_proto::rr::rdata::svcb::{IpHint, SvcParamKey, SvcParamValue};
 use log::{debug, error};
 use crate::domain_controller::DomainController;
 use crate::fake_ip::IpManager;
@@ -33,6 +35,38 @@ impl FakeIpHandler {
         Self {
             state: Arc::new(ArcSwap::from(Arc::new(state))),
         }
+    }
+
+    async fn handle_svcb(&self, svcb: &SVCB, actual_interface_name: &str, fwmark: u32) -> anyhow::Result<SVCB> {
+        let state = self.state.load();
+        let mut params = vec![];
+        for (k, v) in svcb.svc_params() {
+            params.push((k.clone(), match v {
+                SvcParamValue::Ipv4Hint(IpHint(a)) => {
+                    let mut ips = vec![];
+                    for ip in a {
+                        let IpAddr::V4(ipv4) = state.v4.get_or_assign_ip(&IpAddr::V4(ip.0), actual_interface_name, fwmark).await? else {
+                            unimplemented!()
+                        };
+                        ips.push(A(ipv4));
+                    }
+                    SvcParamValue::Ipv4Hint(IpHint(ips))
+                }
+                SvcParamValue::Ipv6Hint(IpHint(aaaa)) => {
+                    let mut ips = vec![];
+                    for ip in aaaa {
+                        let IpAddr::V6(ipv6) = state.v6.get_or_assign_ip(&IpAddr::V6(ip.0), actual_interface_name, fwmark).await? else {
+                            unimplemented!()
+                        };
+                        ips.push(AAAA(ipv6));
+                    }
+                    SvcParamValue::Ipv6Hint(IpHint(ips))
+                }
+                v => v.clone(),
+            }));
+        }
+
+        Ok(SVCB::new(svcb.svc_priority(), svcb.target_name().clone(), params))
     }
 }
 
@@ -82,12 +116,32 @@ impl RequestHandler for FakeIpHandler {
                 let real_ip = match r.data() {
                     RData::A(a) => state.v4.get_or_assign_ip(&IpAddr::V4(a.0), actual_interface_name, fwmark).await,
                     RData::AAAA(aaaa) => state.v6.get_or_assign_ip(&IpAddr::V6(aaaa.0), actual_interface_name, fwmark).await,
+                    RData::HTTPS(HTTPS(svcb)) => {
+                        let svcb = self.handle_svcb(svcb, actual_interface_name, fwmark).await;
+                        match svcb {
+                            Ok(svcb) => {
+                                r.set_data(RData::HTTPS(HTTPS(svcb))).set_ttl(60);
+                                continue;
+                            }
+                            Err(e) => Err(e)
+                        }
+                    }
+                    RData::SVCB(svcb) => {
+                        let svcb = self.handle_svcb(svcb, actual_interface_name, fwmark).await;
+                        match svcb {
+                            Ok(svcb) => {
+                                r.set_data(RData::SVCB(svcb)).set_ttl(60);
+                                continue;
+                            }
+                            Err(e) => Err(e)
+                        }
+                    }
                     _ => continue
                 };
                 
                 match real_ip {
-                    Ok(IpAddr::V4(v4)) => r.set_data(RData::A(rdata::A(v4))),
-                    Ok(IpAddr::V6(v6)) => r.set_data(RData::AAAA(rdata::AAAA(v6))),
+                    Ok(IpAddr::V4(v4)) => r.set_data(RData::A(A(v4))),
+                    Ok(IpAddr::V6(v6)) => r.set_data(RData::AAAA(AAAA(v6))),
                     Err(e) => {
                         error!("failed to assign ip {}", e);
                         header.set_response_code(ResponseCode::ServFail);
