@@ -141,6 +141,9 @@ impl NetworkManager {
             }
         }
 
+        for iface in &self.interfaces {
+            batch.add(NfListObject::Rule(self.get_accept_incoming_rule(&iface.name)));
+        }
         for ip in [IpVersion::V4, IpVersion::V6] {
             let (protocol, subnet_map) = match ip {
                 IpVersion::V4 => ("ip", MAP_SUBNET_V4_MARK),
@@ -313,6 +316,26 @@ impl NetworkManager {
                 }))),
             data: Expression::String(format!("@{}", map_name).into()),
         })))
+    }
+    fn get_accept_incoming_rule<'a>(&self, if_name: &'a str) -> Rule<'a> {
+        Rule {
+            family: NfFamily::INet,
+            table: self.nft_table_name.clone().into(),
+            chain: "mangle_prerouting".into(),
+            expr: vec![
+                Statement::Match(Match {
+                    left: Expression::Named(NamedExpression::Meta(Meta { key: MetaKey::Iifname })),
+                    right: Expression::String(if_name.into()),
+                    op: Operator::EQ,
+                }),
+                Statement::Mangle(Mangle {
+                    key: Expression::Named(NamedExpression::Meta(Meta { key: MetaKey::Mark })),
+                    value: Expression::Number(0),
+                }),
+                Statement::Accept(None),
+            ].into(),
+            ..Default::default()
+        }
     }
 
     fn get_steering_rule(&self, chain: &'static str, protocol: &'static str, map_name: &'static str, mark_map_name: &'static str, counter_name: &'static str) -> Rule<'_> {
