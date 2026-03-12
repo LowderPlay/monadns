@@ -13,6 +13,8 @@ This functionality provides a lightweight, transparent proxying mechanism akin t
 - **TCP MSS Clamping**: Built-in support for MSS clamping to prevent fragmentation issues on tunnel interfaces (e.g., WireGuard).
 - **Upstream DNS Support**: Resolves non-intercepted domains via standard upstream resolvers including Quad9, Cloudflare, Google, or custom servers via UDP, DNS-over-TLS (DoT), or DNS-over-HTTPS (DoH).
 - **Domain & IP Lists Management**: Supports adding individual domains/subnets or syncing lists from external sources.
+- **GeoSite & GeoIP Support**: Integrated support for V2Ray-compatible `geosite.dat` and `geoip.dat` files for bulk domain and IP management.
+- **Virtual Geo Protocols**: Reference geo categories directly in your lists using `geosite://<category>` or `geoip://<category>` (e.g., `geosite://google`, `geoip://cn`).
 - **Integrated Web Interface**: A modern web UI built with Svelte 5 and TailwindCSS for managing configuration, domains, IPs, and lists.
 - **REST API**: Fully documented OpenAPI (Swagger) endpoints for programmatic management.
 - **Prometheus Metrics**: Built-in Prometheus exporter for monitoring DNS query metrics and traffic statistics.
@@ -108,6 +110,20 @@ type = "Quad9Https"
     { addr = "8.8.8.8", protocol = "Tls", tls_dns_name = "dns.google" }
   ]
   ```
+
+## GeoSite & GeoIP Management
+
+MonaDNS supports the widely used `geosite.dat` and `geoip.dat` binary formats for efficient management of large domain and IP lists.
+
+1.  **Add Geo Sources:** In the "Geo Sources" tab, add URLs to your `.dat` files (e.g., from [v2fly/domain-list-community](https://github.com/v2fly/domain-list-community/releases/latest/download/dlc.dat) or [v2fly/geoip](https://github.com/v2fly/geoip/releases/latest/download/geoip.dat)).
+2.  **Use Categories:** Once synced, you can use categories from these files in your Domain or IP lists using the following formats:
+    *   `geosite://google` - All domains in the Google category.
+    *   `geosite://cn` - All domains associated with China.
+    *   `geoip://ir` - All IP subnets for Iran.
+3.  **Efficiency:** MonaDNS decodes these files once and stores them in its database. Matching against these lists is highly optimized using a domain specificity fast-path.
+
+> [!NOTE]
+> Regex rules are not supported yet.
 
 ## API & Documentation
 
