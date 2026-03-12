@@ -7,7 +7,8 @@
     update_interval_seconds: 86400,
     include_subdomains: true,
     last_updated: null,
-    interface: null
+    interface: null,
+    priority: 0
   };
 </script>
 
@@ -19,6 +20,7 @@
   addEntity={api.addList}
   removeEntity={api.removeList}
   syncEntity={api.syncList}
+  reorderEntities={api.reorderLists}
   {initialNewEntity}
 >
   {#snippet extraFields({ entity })}

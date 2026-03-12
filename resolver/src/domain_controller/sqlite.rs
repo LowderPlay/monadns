@@ -25,6 +25,7 @@ pub struct DomainList {
     pub include_subdomains: bool,
     pub last_updated: Option<DateTime<Utc>>,
     pub interface: Option<String>,
+    pub priority: i64,
 }
 
 #[derive(Debug, Serialize, Deserialize, FromRow, ToSchema)]
@@ -40,6 +41,7 @@ pub struct IpList {
     pub update_interval_seconds: i64,
     pub last_updated: Option<DateTime<Utc>>,
     pub interface: Option<String>,
+    pub priority: i64,
 }
 
 #[async_trait]
@@ -151,12 +153,13 @@ impl SqliteController {
 
     pub async fn add_domain_list(&self, list: DomainList) -> anyhow::Result<i64> {
         let res = sqlx::query(
-            "INSERT INTO domain_lists (url, update_interval_seconds, include_subdomains, interface) VALUES (?, ?, ?, ?)"
+            "INSERT INTO domain_lists (url, update_interval_seconds, include_subdomains, interface, priority) VALUES (?, ?, ?, ?, ?)"
         )
         .bind(&list.url)
         .bind(list.update_interval_seconds)
         .bind(list.include_subdomains)
         .bind(list.interface)
+        .bind(list.priority)
         .execute(&self.pool)
         .await?;
         let id = res.last_insert_rowid();
@@ -173,10 +176,23 @@ impl SqliteController {
     }
 
     pub async fn list_domain_lists(&self) -> anyhow::Result<Vec<DomainList>> {
-        let lists = sqlx::query_as::<_, DomainList>("SELECT id, url, update_interval_seconds, include_subdomains, last_updated, interface FROM domain_lists")
+        let lists = sqlx::query_as::<_, DomainList>("SELECT id, url, update_interval_seconds, include_subdomains, last_updated, interface, priority FROM domain_lists ORDER BY priority DESC, id ASC")
             .fetch_all(&self.pool)
             .await?;
         Ok(lists)
+    }
+
+    pub async fn reorder_domain_lists(&self, ids: Vec<i64>) -> anyhow::Result<()> {
+        let mut tx = self.pool.begin().await?;
+        for (i, id) in ids.into_iter().enumerate() {
+            sqlx::query("UPDATE domain_lists SET priority = ? WHERE id = ?")
+                .bind(-(i as i64)) // Lower index = higher priority (using negative to keep 0 as default lowest)
+                .bind(id)
+                .execute(&mut *tx)
+                .await?;
+        }
+        tx.commit().await?;
+        Ok(())
     }
 
     pub async fn sync_list_by_id_generic<T: SyncableList>(&self, id: i64) -> anyhow::Result<()> {
@@ -232,11 +248,12 @@ impl SqliteController {
 
     pub async fn add_ip_list(&self, list: IpList) -> anyhow::Result<i64> {
         let res = sqlx::query(
-            "INSERT INTO ip_lists (url, update_interval_seconds, interface) VALUES (?, ?, ?)"
+            "INSERT INTO ip_lists (url, update_interval_seconds, interface, priority) VALUES (?, ?, ?, ?)"
         )
         .bind(&list.url)
         .bind(list.update_interval_seconds)
         .bind(list.interface)
+        .bind(list.priority)
         .execute(&self.pool)
         .await?;
         let id = res.last_insert_rowid();
@@ -253,10 +270,23 @@ impl SqliteController {
     }
 
     pub async fn list_ip_lists(&self) -> anyhow::Result<Vec<IpList>> {
-        let lists = sqlx::query_as::<_, IpList>("SELECT id, url, update_interval_seconds, last_updated, interface FROM ip_lists")
+        let lists = sqlx::query_as::<_, IpList>("SELECT id, url, update_interval_seconds, last_updated, interface, priority FROM ip_lists ORDER BY priority DESC, id ASC")
             .fetch_all(&self.pool)
             .await?;
         Ok(lists)
+    }
+
+    pub async fn reorder_ip_lists(&self, ids: Vec<i64>) -> anyhow::Result<()> {
+        let mut tx = self.pool.begin().await?;
+        for (i, id) in ids.into_iter().enumerate() {
+            sqlx::query("UPDATE ip_lists SET priority = ? WHERE id = ?")
+                .bind(-(i as i64))
+                .bind(id)
+                .execute(&mut *tx)
+                .await?;
+        }
+        tx.commit().await?;
+        Ok(())
     }
 
     pub async fn sync_ip_list_by_id(&self, id: i64) -> anyhow::Result<()> {
@@ -264,7 +294,7 @@ impl SqliteController {
     }
 
     async fn sync_lists<T: SyncableList>(&self) -> anyhow::Result<()> {
-        let query = format!("SELECT * FROM {}", T::table_name());
+        let query = format!("SELECT * FROM {} ORDER BY priority DESC, id ASC", T::table_name());
         let lists = sqlx::query_as::<_, T>(&query)
             .fetch_all(&self.pool)
             .await?;
@@ -338,18 +368,20 @@ impl SqliteController {
 
     pub async fn get_all_subnets(&self) -> anyhow::Result<Vec<(String, Option<String>)>> {
         let mut subnets = Vec::new();
+        let mut seen = std::collections::HashSet::new();
 
-        // From ip_rules
         let rules = self.list_ip_rules().await?;
         for rule in rules {
-            subnets.push((rule.subnet, rule.interface));
+            if seen.insert(rule.subnet.clone()) {
+                subnets.push((rule.subnet, rule.interface));
+            }
         }
 
-        // From ip_lists
         let rows = sqlx::query(
             "SELECT list_ips.subnet, ip_lists.interface 
              FROM list_ips 
-             JOIN ip_lists ON list_ips.list_id = ip_lists.id"
+             JOIN ip_lists ON list_ips.list_id = ip_lists.id
+             ORDER BY ip_lists.priority DESC, ip_lists.id ASC"
         )
         .fetch_all(&self.pool)
         .await?;
@@ -357,7 +389,9 @@ impl SqliteController {
         for row in rows {
             let subnet: String = row.get(0);
             let interface: Option<String> = row.get(1);
-            subnets.push((subnet, interface));
+            if seen.insert(subnet.clone()) {
+                subnets.push((subnet, interface));
+            }
         }
 
         Ok(subnets)
@@ -365,21 +399,29 @@ impl SqliteController {
 
     pub async fn get_all_domains(&self) -> anyhow::Result<Vec<String>> {
         let mut domains = Vec::new();
+        let mut seen = std::collections::HashSet::new();
 
-        // From domain_rules
         let rules = self.list_rules().await?;
         for rule in rules {
-            domains.push(rule.domain);
+            if seen.insert(rule.domain.clone()) {
+                domains.push(rule.domain);
+            }
         }
 
-        // From list_domains
-        let rows = sqlx::query("SELECT domain FROM list_domains")
-            .fetch_all(&self.pool)
-            .await?;
+        let rows = sqlx::query(
+            "SELECT list_domains.domain 
+             FROM list_domains 
+             JOIN domain_lists ON list_domains.list_id = domain_lists.id
+             ORDER BY domain_lists.priority DESC, domain_lists.id ASC"
+        )
+        .fetch_all(&self.pool)
+        .await?;
 
         for row in rows {
             let domain: String = row.get(0);
-            domains.push(domain);
+            if seen.insert(domain.clone()) {
+                domains.push(domain);
+            }
         }
 
         Ok(domains)
@@ -416,13 +458,18 @@ impl DomainController for SqliteController {
             check_domains.push(parts[i..].join("."));
         }
 
-        // 1. Check domain_rules
-        let mut qb = sqlx::QueryBuilder::<sqlx::Sqlite>::new("SELECT domain, include_subdomains, interface FROM domain_rules WHERE domain IN (");
+        // Stricter rules (more specific domains) should be matched first.
+        // specificity = length of the matching domain.
+        let mut qb = sqlx::QueryBuilder::<sqlx::Sqlite>::new(
+            "SELECT domain, include_subdomains, interface 
+             FROM domain_rules 
+             WHERE domain IN ("
+        );
         let mut separated = qb.separated(", ");
         for d in &check_domains {
             separated.push_bind(d);
         }
-        separated.push_unseparated(")");
+        separated.push_unseparated(") ORDER BY length(domain) DESC");
         
         let rules_result = qb.build().fetch_all(&self.pool).await;
         if let Ok(rows) = rules_result {
@@ -443,7 +490,7 @@ impl DomainController for SqliteController {
             error!("Error querying domain_rules: {}", e);
         }
 
-        // 2. Check list domains
+        // 2. Check list domains (Ordered by list priority)
         let mut qb = sqlx::QueryBuilder::<sqlx::Sqlite>::new(
             "SELECT list_domains.list_id, list_domains.domain, domain_lists.include_subdomains, domain_lists.interface 
              FROM list_domains 
@@ -454,7 +501,7 @@ impl DomainController for SqliteController {
         for d in &check_domains {
             separated.push_bind(d);
         }
-        separated.push_unseparated(")");
+        separated.push_unseparated(") ORDER BY domain_lists.priority DESC, domain_lists.id ASC, length(list_domains.domain) DESC");
 
         let list_result = qb.build().fetch_all(&self.pool).await;
         if let Ok(rows) = list_result {

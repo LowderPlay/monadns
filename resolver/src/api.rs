@@ -23,9 +23,9 @@ use crate::domain_controller::sqlite::{DomainRule, DomainList, IpRule, IpList};
     paths(
         get_config, patch_config, 
         list_domain_rules, add_domain_rule, remove_domain_rule, 
-        list_domain_lists, add_domain_list, remove_domain_list, sync_domain_list,
+        list_domain_lists, add_domain_list, remove_domain_list, sync_domain_list, reorder_domain_lists,
         list_ip_rules, add_ip_rule, remove_ip_rule,
-        list_ip_lists, add_ip_list, remove_ip_list, sync_ip_list,
+        list_ip_lists, add_ip_list, remove_ip_list, sync_ip_list, reorder_ip_lists,
         export_domains, export_ips
     ),
     components(schemas(Config, PatchConfig, UpstreamResolverConfig, DomainRule, DomainList, IpRule, IpList)),
@@ -82,11 +82,13 @@ pub fn create_router(app: Arc<App>) -> Router {
         .route("/domains", get(list_domain_rules).post(add_domain_rule))
         .route("/domains/{domain}", delete(remove_domain_rule))
         .route("/lists", get(list_domain_lists).post(add_domain_list))
+        .route("/lists/reorder", post(reorder_domain_lists))
         .route("/lists/{id}", delete(remove_domain_list))
         .route("/lists/{id}/sync", post(sync_domain_list))
         .route("/ips", get(list_ip_rules).post(add_ip_rule))
         .route("/ips/{*subnet}", delete(remove_ip_rule))
         .route("/ip-lists", get(list_ip_lists).post(add_ip_list))
+        .route("/ip-lists/reorder", post(reorder_ip_lists))
         .route("/ip-lists/{id}", delete(remove_ip_list))
         .route("/ip-lists/{id}/sync", post(sync_ip_list))
         .with_state(app.clone())
@@ -263,6 +265,25 @@ async fn remove_domain_list(
         .map_err(|e| e.to_string())
 }
 
+/// Reorder domain lists
+#[utoipa::path(
+    post,
+    path = "/lists/reorder",
+    request_body = [i64],
+    responses(
+        (status = 200, description = "Domain lists reordered", body = String),
+        (status = 500, description = "Failed to reorder domain lists", body = String)
+    )
+)]
+async fn reorder_domain_lists(
+    State(app): State<Arc<App>>,
+    Json(ids): Json<Vec<i64>>,
+) -> Result<Json<String>, String> {
+    app.controller().reorder_domain_lists(ids).await
+        .map(|_| Json("Domain lists reordered".to_string()))
+        .map_err(|e| e.to_string())
+}
+
 /// Sync a domain list
 #[utoipa::path(
     post,
@@ -407,6 +428,25 @@ async fn remove_ip_list(
 ) -> Result<Json<String>, String> {
     app.controller().remove_ip_list(id).await
         .map(|_| Json("IP list removed".to_string()))
+        .map_err(|e| e.to_string())
+}
+
+/// Reorder IP lists
+#[utoipa::path(
+    post,
+    path = "/ip-lists/reorder",
+    request_body = [i64],
+    responses(
+        (status = 200, description = "IP lists reordered", body = String),
+        (status = 500, description = "Failed to reorder IP lists", body = String)
+    )
+)]
+async fn reorder_ip_lists(
+    State(app): State<Arc<App>>,
+    Json(ids): Json<Vec<i64>>,
+) -> Result<Json<String>, String> {
+    app.controller().reorder_ip_lists(ids).await
+        .map(|_| Json("IP lists reordered".to_string()))
         .map_err(|e| e.to_string())
 }
 

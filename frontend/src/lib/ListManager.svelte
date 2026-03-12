@@ -1,6 +1,5 @@
 <script lang="ts" generics="T extends { id?: number; url: string; update_interval_seconds: number; last_updated: string | null; interface: string | null; }">
   import { onMount } from 'svelte';
-  import { api } from './api';
   import { toast } from './toast_state.svelte';
   import type { Snippet } from 'svelte';
   import InterfaceSelect from './InterfaceSelect.svelte';
@@ -13,6 +12,7 @@
     addEntity: (entity: T) => Promise<any>;
     removeEntity: (id: number) => Promise<any>;
     syncEntity: (id: number) => Promise<any>;
+    reorderEntities?: (ids: number[]) => Promise<any>;
     initialNewEntity: T;
     // Snippets for customization
     extraFields?: Snippet<[{ entity: T }]>;
@@ -22,7 +22,7 @@
 
   let { 
     title, addLabel, emptyMessage, 
-    fetchData, addEntity, removeEntity, syncEntity, 
+    fetchData, addEntity, removeEntity, syncEntity, reorderEntities,
     initialNewEntity,
     extraFields, extraHeaders, extraCells
   }: Props = $props();
@@ -88,6 +88,27 @@
     }
   }
 
+  async function moveItem(index: number, direction: 'up' | 'down') {
+    if (!reorderEntities) return;
+    
+    const newItems = [...items];
+    const targetIndex = direction === 'up' ? index - 1 : index + 1;
+    
+    if (targetIndex < 0 || targetIndex >= newItems.length) return;
+    
+    const [movedItem] = newItems.splice(index, 1);
+    newItems.splice(targetIndex, 0, movedItem);
+    
+    try {
+      const ids = newItems.map(item => item.id!).filter(id => id !== undefined);
+      await reorderEntities(ids);
+      items = newItems;
+      toast.success('Order updated');
+    } catch (e: any) {
+      toast.error('Failed to reorder: ' + e.message);
+    }
+  }
+
   function formatDate(dateStr: string | null) {
     if (!dateStr) return 'Never';
     return new Date(dateStr).toLocaleString();
@@ -132,6 +153,7 @@
       </button>
     </div>
   </div>
+  <p class="text-xs text-zinc-500 mb-1">The rules are prioritised by their order (starting from the top).</p>
 
   <!-- Entities Table -->
   <div class="overflow-x-auto">
@@ -152,9 +174,29 @@
         </tr>
       </thead>
       <tbody>
-        {#each items as item}
+        {#each items as item, i}
           <tr class="border-b border-zinc-900 hover:bg-zinc-900/50">
-            <td class="p-2 truncate max-w-xs" title={item.id?.toString()}>{item.id}</td>
+            <td class="p-2 truncate max-w-xs" title={item.id?.toString()}>
+              <div class="flex items-center gap-2">
+                {#if reorderEntities}
+                  <div class="flex flex-col gap-0.5">
+                    <button 
+                      onclick={() => moveItem(i, 'up')} 
+                      disabled={i === 0}
+                      class="text-[10px] hover:text-white disabled:text-zinc-700 transition-colors"
+                      title="Move Up"
+                    >▲</button>
+                    <button 
+                      onclick={() => moveItem(i, 'down')} 
+                      disabled={i === items.length - 1}
+                      class="text-[10px] hover:text-white disabled:text-zinc-700 transition-colors"
+                      title="Move Down"
+                    >▼</button>
+                  </div>
+                {/if}
+                <span>{item.id}</span>
+              </div>
+            </td>
             <td class="p-2 truncate max-w-xs" title={item.url}>{item.url}</td>
             <td class="p-2 text-center text-sm font-mono text-zinc-400">{item.interface || 'Default'}</td>
             

@@ -54,6 +54,7 @@ export interface DomainList {
   include_subdomains: boolean;
   last_updated: string | null;
   interface: string | null;
+  priority: number;
 }
 
 export interface IpRule {
@@ -67,6 +68,7 @@ export interface IpList {
   update_interval_seconds: number;
   last_updated: string | null;
   interface: string | null;
+  priority: number;
 }
 
 async function request<T>(path: string, options: RequestInit = {}): Promise<T> {
@@ -74,7 +76,7 @@ async function request<T>(path: string, options: RequestInit = {}): Promise<T> {
   if (auth.key) {
     headers.set('X-Api-Key', auth.key);
   }
-  if (options.body && !(options.body instanceof FormData)) {
+  if (options.body && typeof options.body === 'string') {
     headers.set('Content-Type', 'application/json');
   }
 
@@ -90,7 +92,8 @@ async function request<T>(path: string, options: RequestInit = {}): Promise<T> {
     throw new Error(error || response.statusText);
   }
 
-  if (response.headers.get('Content-Type')?.includes('application/json')) {
+  const contentType = response.headers.get('Content-Type');
+  if (contentType && contentType.includes('application/json')) {
     return response.json();
   }
   return response.text() as unknown as T;
@@ -108,6 +111,7 @@ export const api = {
   addList: (list: DomainList) => request<string>('/api/lists', { method: 'POST', body: JSON.stringify(list) }),
   removeList: (id: number) => request<string>(`/api/lists/${id}`, { method: 'DELETE' }),
   syncList: (id: number) => request<string>(`/api/lists/${id}/sync`, { method: 'POST' }),
+  reorderLists: (ids: number[]) => request<string>('/api/lists/reorder', { method: 'POST', body: JSON.stringify(ids) }),
 
   getIps: () => request<IpRule[]>('/api/ips'),
   addIp: (rule: IpRule) => request<string>('/api/ips', { method: 'POST', body: JSON.stringify(rule) }),
@@ -117,4 +121,5 @@ export const api = {
   addIpList: (list: IpList) => request<string>('/api/ip-lists', { method: 'POST', body: JSON.stringify(list) }),
   removeIpList: (id: number) => request<string>(`/api/ip-lists/${id}`, { method: 'DELETE' }),
   syncIpList: (id: number) => request<string>(`/api/ip-lists/${id}/sync`, { method: 'POST' }),
+  reorderIpLists: (ids: number[]) => request<string>('/api/ip-lists/reorder', { method: 'POST', body: JSON.stringify(ids) }),
 };

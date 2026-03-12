@@ -6,7 +6,8 @@
     url: '',
     update_interval_seconds: 86400,
     last_updated: null,
-    interface: null
+    interface: null,
+    priority: 0
   };
 </script>
 
@@ -18,5 +19,6 @@
   addEntity={api.addIpList}
   removeEntity={api.removeIpList}
   syncEntity={api.syncIpList}
+  reorderEntities={api.reorderIpLists}
   {initialNewEntity}
 />

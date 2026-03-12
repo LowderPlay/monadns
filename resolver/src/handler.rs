@@ -6,9 +6,9 @@ use hickory_server::server::{Request, RequestHandler, ResponseHandler, ResponseI
 use hickory_proto::op::{Header, ResponseCode};
 use hickory_server::authority::MessageResponseBuilder;
 use hickory_proto::ProtoErrorKind;
-use hickory_proto::rr::{rdata, IntoName, RData};
+use hickory_proto::rr::RData;
 use hickory_proto::rr::rdata::{A, AAAA, HTTPS, SVCB};
-use hickory_proto::rr::rdata::svcb::{IpHint, SvcParamKey, SvcParamValue};
+use hickory_proto::rr::rdata::svcb::{IpHint, SvcParamValue};
 use log::{debug, error};
 use crate::domain_controller::DomainController;
 use crate::fake_ip::IpManager;
