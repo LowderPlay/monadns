@@ -44,6 +44,15 @@ pub struct IpList {
     pub priority: i64,
 }
 
+#[derive(Debug, Serialize, Deserialize, FromRow, ToSchema)]
+pub struct GeoSource {
+    pub id: Option<i64>,
+    pub url: String,
+    pub r#type: String, // 'geosite' or 'geoip'
+    pub update_interval_seconds: i64,
+    pub last_updated: Option<DateTime<Utc>>,
+}
+
 #[async_trait]
 pub trait SyncableList: Send + Sync + for<'a> FromRow<'a, sqlx::sqlite::SqliteRow> + Unpin {
     fn id(&self) -> Option<i64>;
@@ -117,6 +126,9 @@ impl SqliteController {
                 }
                 if let Err(e) = self.sync_lists::<IpList>().await {
                     error!("Error syncing IP lists: {}", e);
+                }
+                if let Err(e) = self.sync_geo_sources().await {
+                    error!("Error syncing geo sources: {}", e);
                 }
             }
         });
@@ -328,9 +340,16 @@ impl SqliteController {
 
     async fn fetch_and_cache_generic<T: SyncableList>(&self, client: &reqwest::Client, list: &T) -> anyhow::Result<()> {
         let list_id = list.id().expect("List must have an ID");
+        let url = list.url();
+
+        if url.starts_with("geosite://") || url.starts_with("geoip://") {
+            info!("Skipping fetch for virtual geo list {} ({})", list_id, url);
+            return Ok(());
+        }
+
         info!("Syncing {} list {}", T::entry_column_name(), list_id);
         let start = Instant::now();
-        let response = client.get(list.url()).send().await?.text().await?;
+        let response = client.get(url).send().await?.text().await?;
         
         let mut tx = self.pool.begin().await?;
         let delete_query = format!("DELETE FROM {} WHERE list_id = ?", T::entries_table_name());
@@ -394,6 +413,23 @@ impl SqliteController {
             }
         }
 
+        let geo_rows = sqlx::query(
+            "SELECT geoip_data.subnet, ip_lists.interface 
+             FROM geoip_data 
+             JOIN ip_lists ON ip_lists.url = 'geoip://' || geoip_data.category
+             ORDER BY ip_lists.priority DESC, ip_lists.id ASC"
+        )
+        .fetch_all(&self.pool)
+        .await?;
+
+        for row in geo_rows {
+            let subnet: String = row.get(0);
+            let interface: Option<String> = row.get(1);
+            if seen.insert(subnet.clone()) {
+                subnets.push((subnet, interface));
+            }
+        }
+
         Ok(subnets)
     }
 
@@ -424,6 +460,23 @@ impl SqliteController {
             }
         }
 
+        let geo_rows = sqlx::query(
+            "SELECT geosite_data.domain 
+             FROM geosite_data 
+             JOIN domain_lists ON domain_lists.url = 'geosite://' || geosite_data.category
+             WHERE geosite_data.type IN (2, 3)
+             ORDER BY domain_lists.priority DESC, domain_lists.id ASC"
+        )
+        .fetch_all(&self.pool)
+        .await?;
+
+        for row in geo_rows {
+            let domain: String = row.get(0);
+            if seen.insert(domain.clone()) {
+                domains.push(domain);
+            }
+        }
+
         Ok(domains)
     }
 
@@ -434,6 +487,8 @@ impl SqliteController {
         let ip_lists: (i64,) = sqlx::query_as("SELECT COUNT(*) FROM ip_lists").fetch_one(&self.pool).await?;
         let total_list_ips: (i64,) = sqlx::query_as("SELECT COUNT(*) FROM list_ips").fetch_one(&self.pool).await?;
         let total_list_domains: (i64,) = sqlx::query_as("SELECT COUNT(*) FROM list_domains").fetch_one(&self.pool).await?;
+        let geosite_entries: (i64,) = sqlx::query_as("SELECT COUNT(*) FROM geosite_data").fetch_one(&self.pool).await?;
+        let geoip_entries: (i64,) = sqlx::query_as("SELECT COUNT(*) FROM geoip_data").fetch_one(&self.pool).await?;
 
         metrics::gauge!("total_domain_rules_count").set(domain_rules.0 as f64);
         metrics::gauge!("total_domain_lists_count").set(domain_lists.0 as f64);
@@ -441,8 +496,176 @@ impl SqliteController {
         metrics::gauge!("total_ip_lists_count").set(ip_lists.0 as f64);
         metrics::gauge!("total_list_ips_count").set(total_list_ips.0 as f64);
         metrics::gauge!("total_list_domains_count").set(total_list_domains.0 as f64);
+        metrics::gauge!("total_geosite_entries_count").set(geosite_entries.0 as f64);
+        metrics::gauge!("total_geoip_entries_count").set(geoip_entries.0 as f64);
 
         Ok(())
+    }
+
+    pub async fn add_geo_source(&self, source: GeoSource) -> anyhow::Result<i64> {
+        let res = sqlx::query(
+            "INSERT INTO geo_sources (url, type, update_interval_seconds) VALUES (?, ?, ?)"
+        )
+        .bind(&source.url)
+        .bind(&source.r#type)
+        .bind(source.update_interval_seconds)
+        .execute(&self.pool)
+        .await?;
+        Ok(res.last_insert_rowid())
+    }
+
+    pub async fn remove_geo_source(&self, id: i64) -> anyhow::Result<()> {
+        sqlx::query("DELETE FROM geo_sources WHERE id = ?")
+            .bind(id)
+            .execute(&self.pool)
+            .await?;
+        Ok(())
+    }
+
+    pub async fn list_geo_sources(&self) -> anyhow::Result<Vec<GeoSource>> {
+        let sources = sqlx::query_as::<_, GeoSource>("SELECT id, url, type, update_interval_seconds, last_updated FROM geo_sources")
+            .fetch_all(&self.pool)
+            .await?;
+        Ok(sources)
+    }
+
+    pub async fn sync_geo_source_by_id(&self, id: i64) -> anyhow::Result<()> {
+        let source = sqlx::query_as::<_, GeoSource>("SELECT * FROM geo_sources WHERE id = ?")
+            .bind(id)
+            .fetch_optional(&self.pool)
+            .await?
+            .ok_or_else(|| anyhow::anyhow!("Geo source with ID {} not found", id))?;
+
+        let client = reqwest::Client::new();
+        self.fetch_and_cache_geo(&client, &source).await?;
+
+        sqlx::query("UPDATE geo_sources SET last_updated = ? WHERE id = ?")
+            .bind(Utc::now())
+            .bind(id)
+            .execute(&self.pool)
+            .await?;
+        
+        Ok(())
+    }
+
+    async fn sync_geo_sources(&self) -> anyhow::Result<()> {
+        let sources = self.list_geo_sources().await?;
+        let client = reqwest::Client::new();
+        
+        for source in sources {
+            let now = Utc::now();
+            let should_update = match source.last_updated {
+                None => true,
+                Some(last) => (now - last).num_seconds() >= source.update_interval_seconds,
+            };
+
+            if should_update {
+                match self.fetch_and_cache_geo(&client, &source).await {
+                    Ok(_) => {
+                        sqlx::query("UPDATE geo_sources SET last_updated = ? WHERE id = ?")
+                            .bind(now)
+                            .bind(source.id)
+                            .execute(&self.pool)
+                            .await?;
+                    }
+                    Err(e) => {
+                        error!("Failed to sync geo source {}: {}", source.url, e);
+                    }
+                }
+            }
+        }
+        Ok(())
+    }
+
+    async fn fetch_and_cache_geo(&self, client: &reqwest::Client, source: &GeoSource) -> anyhow::Result<()> {
+        let source_id = source.id.expect("Source must have an ID");
+        info!("Syncing geo source {} ({})", source_id, source.url);
+        let start = Instant::now();
+        let response = client.get(&source.url).send().await?.bytes().await?;
+        
+        let mut tx = self.pool.begin().await?;
+        
+        if source.r#type == "geosite" {
+            let list = geosite_rs::decode_geosite(&response)?;
+            sqlx::query("DELETE FROM geosite_data WHERE source_id = ?")
+                .bind(source_id)
+                .execute(&mut *tx)
+                .await?;
+
+            let mut all_entries = Vec::new();
+            for entry in list.entry {
+                for domain in entry.domain {
+                    all_entries.push((entry.country_code.clone(), domain.value, domain.r#type));
+                }
+            }
+
+            let mut count = 0;
+            for chunk in all_entries.chunks(1000) {
+                let mut qb = sqlx::QueryBuilder::new("INSERT INTO geosite_data (source_id, category, domain, type) ");
+                qb.push_values(chunk, |mut b, (category, domain, r#type)| {
+                    b.push_bind(source_id)
+                     .push_bind(category)
+                     .push_bind(domain)
+                     .push_bind(r#type);
+                });
+                qb.build().execute(&mut *tx).await?;
+                count += chunk.len();
+            }
+            info!("Successfully synced geosite source {} in {:?}: {} entries", source_id, start.elapsed(), count);
+        } else if source.r#type == "geoip" {
+            let list = geosite_rs::decode_geoip(&response)?;
+            sqlx::query("DELETE FROM geoip_data WHERE source_id = ?")
+                .bind(source_id)
+                .execute(&mut *tx)
+                .await?;
+
+            let mut all_entries = Vec::new();
+            for entry in list.entry {
+                for cidr in entry.cidr {
+                    let ip = if cidr.ip.len() == 4 {
+                        std::net::Ipv4Addr::from([cidr.ip[0], cidr.ip[1], cidr.ip[2], cidr.ip[3]]).to_string()
+                    } else if cidr.ip.len() == 16 {
+                        let mut arr = [0u8; 16];
+                        arr.copy_from_slice(&cidr.ip);
+                        std::net::Ipv6Addr::from(arr).to_string()
+                    } else {
+                        continue;
+                    };
+                    let subnet = format!("{}/{}", ip, cidr.prefix);
+                    all_entries.push((entry.country_code.clone(), subnet));
+                }
+            }
+
+            let mut count = 0;
+            for chunk in all_entries.chunks(1000) {
+                let mut qb = sqlx::QueryBuilder::new("INSERT INTO geoip_data (source_id, category, subnet) ");
+                qb.push_values(chunk, |mut b, (category, subnet)| {
+                    b.push_bind(source_id)
+                     .push_bind(category)
+                     .push_bind(subnet);
+                });
+                qb.build().execute(&mut *tx).await?;
+                count += chunk.len();
+            }
+            info!("Successfully synced geoip source {} in {:?}: {} entries", source_id, start.elapsed(), count);
+        }
+
+        tx.commit().await?;
+        Ok(())
+    }
+
+    pub async fn list_geosite_categories(&self) -> anyhow::Result<Vec<String>> {
+        let rows = sqlx::query("SELECT DISTINCT category FROM geosite_data ORDER BY category ASC")
+            .fetch_all(&self.pool)
+            .await?;
+        Ok(rows.into_iter().map(|r| r.get(0)).collect())
+    }
+
+    pub async fn list_geoip_categories(&self) -> anyhow::Result<Vec<String>> {
+        let rows = sqlx::query("SELECT DISTINCT category FROM geoip_data ORDER BY category ASC")
+            .fetch_all(&self.pool)
+            .await?;
+        Ok(rows.into_iter().map(|r| r.get(0)).collect())
     }
 }
 
@@ -521,6 +744,50 @@ impl DomainController for SqliteController {
             }
         } else if let Err(e) = list_result {
             error!("Error querying list_domains: {}", e);
+        }
+
+        // 3. Check geosite lists (Ordered by list priority)
+        let mut qb = sqlx::QueryBuilder::<sqlx::Sqlite>::new(
+            "SELECT domain_lists.id, domain_lists.interface, geosite_data.domain, geosite_data.type, geosite_data.category 
+             FROM geosite_data 
+             JOIN domain_lists ON domain_lists.url = 'geosite://' || geosite_data.category 
+             WHERE geosite_data.domain IN ("
+        );
+        let mut separated = qb.separated(", ");
+        for d in &check_domains {
+            separated.push_bind(d);
+        }
+        separated.push_unseparated(") ORDER BY domain_lists.priority DESC, domain_lists.id ASC, length(geosite_data.domain) DESC");
+
+        let geosite_result = qb.build().fetch_all(&self.pool).await;
+        if let Ok(rows) = geosite_result {
+            for row in rows {
+                let list_id: i64 = row.get(0);
+                let interface: Option<String> = row.get(1);
+                let hit_domain: String = row.get(2);
+                let hit_type: i32 = row.get(3);
+                let category: String = row.get(4);
+                
+                // hit_type: Plain = 0, Regex = 1, Domain = 2, Full = 3
+                let matches = if hit_type == 3 { // Full
+                    hit_domain == domain
+                } else if hit_type == 2 { // Domain (suffix)
+                    true // Since it's in check_domains, it's either the domain itself or a parent.
+                } else {
+                    false // keywords and regex not supported via this fast path
+                };
+
+                if matches {
+                    let interface = interface.unwrap_or_else(|| "default".to_string());
+                    metrics::counter!("geosite_hits", 
+                        "list_id" => list_id.to_string(), 
+                        "category" => category, 
+                        "interface" => interface.to_string()).increment(1);
+                    return Some(interface);
+                }
+            }
+        } else if let Err(e) = geosite_result {
+            error!("Error querying geosite_data: {}", e);
         }
 
         None

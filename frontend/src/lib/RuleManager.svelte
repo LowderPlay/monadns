@@ -1,6 +1,5 @@
 <script lang="ts" generics="T extends { interface: string | null; }">
   import { onMount } from 'svelte';
-  import { api } from './api';
   import { toast } from './toast_state.svelte';
   import InterfaceSelect from './InterfaceSelect.svelte';
   import type { Snippet } from 'svelte';
@@ -91,18 +90,17 @@
 
   <!-- Add New Rule Form -->
   <div class="bg-zinc-900 p-4 border border-zinc-800 space-y-4">
-    <h3 class="text-lg font-bold">Add new {title.toLowerCase()}</h3>
-    <div class="grid grid-cols-1 md:grid-cols-4 gap-4 items-end">
-      <div class="flex flex-col gap-1">
-        <label for="rule_input" class="text-sm text-zinc-400 font-bold">{idLabel}</label>
-        <input id="rule_input" bind:value={newEntity[idField]} placeholder={idLabel} class="bg-zinc-950 border border-zinc-700 p-2 focus:outline-none focus:border-zinc-500" />
+    <h3 class="text-lg font-bold">Add new {title.toLowerCase()} rule</h3>
+    <div class="grid grid-cols-1 md:grid-cols-2 lg:grid-cols-5 gap-4 items-end">
+      <div class="flex flex-col gap-1 lg:col-span-2">
+        <label for="rule_entity" class="text-sm text-zinc-400 font-bold">{title}</label>
+        <input id="rule_entity" bind:value={newEntity[idField]} placeholder="Enter {title.toLowerCase()}..." class="bg-zinc-950 border border-zinc-700 p-2 focus:outline-none focus:border-zinc-500 h-10" />
       </div>
 
       <InterfaceSelect 
         value={newEntity.interface} 
         onchange={(val) => newEntity.interface = val} 
       />
-
       {#if extraFields}
         {@render extraFields({ entity: newEntity })}
       {/if}
@@ -112,6 +110,7 @@
       </button>
     </div>
   </div>
+
 
   <!-- Rules Table -->
   <div class="overflow-x-auto">

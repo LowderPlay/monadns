@@ -21,4 +21,5 @@
   syncEntity={api.syncIpList}
   reorderEntities={api.reorderIpLists}
   {initialNewEntity}
+  geoPrefix="geoip://"
 />

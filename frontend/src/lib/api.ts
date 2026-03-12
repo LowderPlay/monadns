@@ -71,6 +71,19 @@ export interface IpList {
   priority: number;
 }
 
+export interface GeoSource {
+  id?: number;
+  url: string;
+  type: 'geosite' | 'geoip';
+  update_interval_seconds: number;
+  last_updated: string | null;
+}
+
+export interface AvailableGeoOptions {
+  geosite: string[];
+  geoip: string[];
+}
+
 async function request<T>(path: string, options: RequestInit = {}): Promise<T> {
   const headers = new Headers(options.headers);
   if (auth.key) {
@@ -122,4 +135,10 @@ export const api = {
   removeIpList: (id: number) => request<string>(`/api/ip-lists/${id}`, { method: 'DELETE' }),
   syncIpList: (id: number) => request<string>(`/api/ip-lists/${id}/sync`, { method: 'POST' }),
   reorderIpLists: (ids: number[]) => request<string>('/api/ip-lists/reorder', { method: 'POST', body: JSON.stringify(ids) }),
+
+  getGeoSources: () => request<GeoSource[]>('/api/geo-sources'),
+  addGeoSource: (source: GeoSource) => request<string>('/api/geo-sources', { method: 'POST', body: JSON.stringify(source) }),
+  removeGeoSource: (id: number) => request<string>(`/api/geo-sources/${id}`, { method: 'DELETE' }),
+  syncGeoSource: (id: number) => request<string>(`/api/geo-sources/${id}/sync`, { method: 'POST' }),
+  getGeoOptions: () => request<AvailableGeoOptions>('/api/geo-options'),
 };

@@ -10,13 +10,20 @@ use axum::{
 };
 use axum_embed::ServeEmbed;
 use log::error;
-use utoipa::OpenApi;
+use serde::Serialize;
+use utoipa::{OpenApi, ToSchema};
 use utoipa_axum::router::OpenApiRouter;
 use utoipa_swagger_ui::SwaggerUi;
 use frontend::FrontendDist;
 use crate::app::App;
 use crate::config::{Config, PatchConfig, UpstreamResolverConfig};
-use crate::domain_controller::sqlite::{DomainRule, DomainList, IpRule, IpList};
+use crate::domain_controller::sqlite::{DomainRule, DomainList, IpRule, IpList, GeoSource};
+
+#[derive(Serialize, ToSchema)]
+pub struct AvailableGeoOptions {
+    pub geosite: Vec<String>,
+    pub geoip: Vec<String>,
+}
 
 #[derive(OpenApi)]
 #[openapi(
@@ -26,9 +33,10 @@ use crate::domain_controller::sqlite::{DomainRule, DomainList, IpRule, IpList};
         list_domain_lists, add_domain_list, remove_domain_list, sync_domain_list, reorder_domain_lists,
         list_ip_rules, add_ip_rule, remove_ip_rule,
         list_ip_lists, add_ip_list, remove_ip_list, sync_ip_list, reorder_ip_lists,
+        list_geo_sources, add_geo_source, remove_geo_source, sync_geo_source, get_geo_options,
         export_domains, export_ips
     ),
-    components(schemas(Config, PatchConfig, UpstreamResolverConfig, DomainRule, DomainList, IpRule, IpList)),
+    components(schemas(Config, PatchConfig, UpstreamResolverConfig, DomainRule, DomainList, IpRule, IpList, GeoSource, AvailableGeoOptions)),
     modifiers(&SecurityAddon),
     security(
         ("api_key" = [])
@@ -91,6 +99,10 @@ pub fn create_router(app: Arc<App>) -> Router {
         .route("/ip-lists/reorder", post(reorder_ip_lists))
         .route("/ip-lists/{id}", delete(remove_ip_list))
         .route("/ip-lists/{id}/sync", post(sync_ip_list))
+        .route("/geo-sources", get(list_geo_sources).post(add_geo_source))
+        .route("/geo-sources/{id}", delete(remove_geo_source))
+        .route("/geo-sources/{id}/sync", post(sync_geo_source))
+        .route("/geo-options", get(get_geo_options))
         .with_state(app.clone())
         .split_for_parts();
 
@@ -474,6 +486,113 @@ pub async fn sync_ip_list(
     });
 
     Ok(Json("IP list sync started".to_string()))
+}
+
+/// List all geo sources
+#[utoipa::path(
+    get,
+    path = "/geo-sources",
+    responses(
+        (status = 200, description = "List of geo sources", body = [GeoSource])
+    )
+)]
+async fn list_geo_sources(
+    State(app): State<Arc<App>>,
+) -> Result<Json<Vec<GeoSource>>, String> {
+    app.controller().list_geo_sources().await
+        .map(Json)
+        .map_err(|e| e.to_string())
+}
+
+/// Add a geo source
+#[utoipa::path(
+    post,
+    path = "/geo-sources",
+    request_body = GeoSource,
+    responses(
+        (status = 200, description = "Geo source added", body = String),
+        (status = 500, description = "Failed to add geo source", body = String)
+    )
+)]
+async fn add_geo_source(
+    State(app): State<Arc<App>>,
+    Json(source): Json<GeoSource>,
+) -> Result<Json<String>, String> {
+    let source_id = app.controller().add_geo_source(source).await
+        .map_err(|e| e.to_string())?;
+
+    let controller = app.controller();
+    tokio::spawn(async move {
+        if let Err(e) = controller.sync_geo_source_by_id(source_id).await {
+            error!("Failed to initial sync for geo source {}: {}", source_id, e);
+        }
+    });
+
+    Ok(Json(format!("Geo source added with id {}", source_id)))
+}
+
+/// Remove a geo source
+#[utoipa::path(
+    delete,
+    path = "/geo-sources/{id}",
+    params(
+        ("id" = i64, Path, description = "ID of the geo source to remove")
+    ),
+    responses(
+        (status = 200, description = "Geo source removed", body = String),
+        (status = 500, description = "Failed to remove geo source", body = String)
+    )
+)]
+async fn remove_geo_source(
+    State(app): State<Arc<App>>,
+    Path(id): Path<i64>,
+) -> Result<Json<String>, String> {
+    app.controller().remove_geo_source(id).await
+        .map(|_| Json("Geo source removed".to_string()))
+        .map_err(|e| e.to_string())
+}
+
+/// Sync a geo source
+#[utoipa::path(
+    post,
+    path = "/geo-sources/{id}/sync",
+    params(
+        ("id" = i64, Path, description = "ID of the geo source to sync")
+    ),
+    responses(
+        (status = 200, description = "Geo source sync started", body = String),
+        (status = 500, description = "Failed to sync geo source", body = String)
+    )
+)]
+pub async fn sync_geo_source(
+    State(app): State<Arc<App>>,
+    Path(id): Path<i64>,
+) -> Result<Json<String>, String> {
+    let controller = app.controller();
+    tokio::spawn(async move {
+        if let Err(e) = controller.sync_geo_source_by_id(id).await {
+            error!("Failed to sync geo source {}: {}", id, e);
+        }
+    });
+
+    Ok(Json("Geo source sync started".to_string()))
+}
+
+/// Get available geosite and geoip categories
+#[utoipa::path(
+    get,
+    path = "/geo-options",
+    responses(
+        (status = 200, description = "Available geo categories", body = AvailableGeoOptions)
+    )
+)]
+async fn get_geo_options(
+    State(app): State<Arc<App>>,
+) -> Result<Json<AvailableGeoOptions>, String> {
+    let geosite = app.controller().list_geosite_categories().await.map_err(|e| e.to_string())?;
+    let geoip = app.controller().list_geoip_categories().await.map_err(|e| e.to_string())?;
+    
+    Ok(Json(AvailableGeoOptions { geosite, geoip }))
 }
 
 /// Export all domains as a .lst file

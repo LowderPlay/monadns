@@ -1,6 +1,7 @@
 <script lang="ts">
   import ConfigTab from './lib/ConfigTab.svelte';
   import DomainListsTab from './lib/DomainListsTab.svelte';
+  import GeoSourcesTab from './lib/GeoSourcesTab.svelte';
   import DomainsTab from './lib/DomainsTab.svelte';
   import IpListsTab from './lib/IpListsTab.svelte';
   import IpRulesTab from './lib/IpRulesTab.svelte';
@@ -9,12 +10,13 @@
   import LoginOverlay from "./lib/LoginOverlay.svelte";
   import { auth } from "./lib/auth_state.svelte";
 
-  type Tab = 'config' | 'lists' | 'domains' | 'ip-lists' | 'ip-rules';
+  type Tab = 'config' | 'lists' | 'geo-sources' | 'domains' | 'ip-lists' | 'ip-rules';
   let activeTab = $state<Tab>('config');
 
   const tabs: { id: Tab; label: string }[] = [
     { id: 'config', label: 'Configuration' },
     { id: 'lists', label: 'Domain Lists' },
+    { id: 'geo-sources', label: 'Geo Sources' },
     { id: 'domains', label: 'Domains' },
     { id: 'ip-lists', label: 'IP Lists' },
     { id: 'ip-rules', label: 'IP Rules' },
@@ -60,6 +62,8 @@
         <ConfigTab />
       {:else if activeTab === 'lists'}
         <DomainListsTab />
+      {:else if activeTab === 'geo-sources'}
+        <GeoSourcesTab />
       {:else if activeTab === 'domains'}
         <DomainsTab />
       {:else if activeTab === 'ip-lists'}
