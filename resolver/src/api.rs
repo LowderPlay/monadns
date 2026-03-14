@@ -643,7 +643,7 @@ async fn export_ips(
 
     match app.controller().get_all_subnets().await {
         Ok(subnets) => {
-            let body = subnets.into_iter().map(|(s, _)| s).collect::<Vec<_>>().join("\n");
+            let body = subnets.into_iter().map(|(s, _, _)| s).collect::<Vec<_>>().join("\n");
             (
                 [(axum::http::header::CONTENT_TYPE, "text/plain; charset=utf-8")],
                 body

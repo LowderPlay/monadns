@@ -69,9 +69,9 @@ impl App {
                 match controller.get_all_subnets().await {
                     Ok(subnets) => {
                         let mut sync_list = Vec::new();
-                        for (subnet, interface) in subnets {
+                        for (subnet, interface, priority) in subnets {
                              let iface = state.config.resolve_interface(interface.as_deref());
-                             sync_list.push((subnet, iface.fwmark));
+                             sync_list.push((subnet, iface.fwmark, priority));
                         }
 
                         let mut last = last_synced.lock().await;
@@ -82,6 +82,7 @@ impl App {
                             } else {
                                 *last = sync_list;
                             }
+                            info!("Synced subnets");
                         }
                     }
                     Err(e) => error!("Failed to fetch subnets from DB: {}", e),
@@ -111,9 +112,9 @@ impl App {
         match controller.get_all_subnets().await {
             Ok(subnets) => {
                 let mut sync_list = Vec::new();
-                for (subnet, interface) in subnets {
+                for (subnet, interface, priority) in subnets {
                     let iface = config.resolve_interface(interface.as_deref());
-                    sync_list.push((subnet, iface.fwmark));
+                    sync_list.push((subnet, iface.fwmark, priority));
                 }
                 if let Err(e) = route_controller.sync_subnets(sync_list).await {
                     error!("Failed to initial sync subnets to nftables: {}", e);

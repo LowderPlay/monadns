@@ -1,18 +1,18 @@
-use std::collections::HashSet;
-use ipnet::IpNet;
+use std::collections::{HashMap, HashSet};
+use ipnet::{IpNet};
 use nftables::schema::*;
 use nftables::types::*;
 use rtnetlink::{new_connection, IpVersion};
 use futures::stream::TryStreamExt;
-use std::net::{IpAddr};
+use std::net::IpAddr;
 use async_trait::async_trait;
-use log::{info, error};
+use log::{error, info};
 use nftables::batch::Batch;
 use nftables::{expr, stmt};
-use nftables::expr::{Expression, Meta, MetaKey, NamedExpression, Payload, PayloadField, TcpOption, Prefix};
+use nftables::expr::{Expression, Meta, MetaKey, NamedExpression, Payload, PayloadField, Prefix, TcpOption};
 use nftables::stmt::{Mangle, Match, Operator, Statement, NAT};
 use rtnetlink::packet_route::rule::{RuleAction, RuleAttribute};
-use crate::route_controller::RouteController;
+use crate::route_controller::{sweepable, RouteController};
 use crate::config::InterfaceConfig;
 
 const MAP_V4: &str = "fake_to_real_v4";
@@ -406,10 +406,7 @@ impl NetworkManager {
             expr: vec![
                 Self::match_nfproto(nfproto),
                 Statement::Match(Match {
-                    left: Expression::Named(NamedExpression::CT(expr::CT {
-                        key: "mark".into(),
-                        ..Default::default()
-                    })),
+                    left: Expression::Named(NamedExpression::Meta(Meta { key: MetaKey::Mark })),
                     right: Expression::Number(iface.fwmark),
                     op: Operator::EQ,
                 }),
@@ -537,7 +534,7 @@ impl RouteController for NetworkManager {
 
         #[derive(Deserialize)]
         struct NftOutput {
-            nftables: Vec<std::collections::HashMap<String, serde_json::Value>>,
+            nftables: Vec<HashMap<String, serde_json::Value>>,
         }
 
         #[derive(Deserialize)]
@@ -590,11 +587,11 @@ impl RouteController for NetworkManager {
         Ok(())
     }
 
-    async fn sync_subnets(&self, subnets: Vec<(String, u32)>) -> anyhow::Result<()> {
-        let mut v4_elements = Vec::new();
-        let mut v6_elements = Vec::new();
+    async fn sync_subnets(&self, subnets: Vec<(String, u32, i64)>) -> anyhow::Result<()> {
+        let mut v4_raw = Vec::new();
+        let mut v6_raw = Vec::new();
 
-        for (subnet_str, fwmark) in subnets {
+        for (subnet_str, fwmark, priority) in subnets {
             let net: IpNet = match subnet_str.parse() {
                 Ok(n) => n,
                 Err(_) => {
@@ -608,22 +605,14 @@ impl RouteController for NetworkManager {
                 }
             };
 
-            let prefix = Expression::Named(NamedExpression::Prefix(Prefix {
-                addr: Box::new(Expression::String(net.network().to_string().into())),
-                len: net.prefix_len() as u32,
-            }));
-
-            let element = Expression::List(vec![
-                prefix,
-                Expression::Number(fwmark),
-            ]);
-
-            if net.addr().is_ipv4() {
-                v4_elements.push(element);
-            } else {
-                v6_elements.push(element);
+            match net {
+                IpNet::V4(v4) => v4_raw.push((v4, fwmark, priority)),
+                IpNet::V6(v6) => v6_raw.push((v6, fwmark, priority)),
             }
         }
+
+        let v4_resolved = sweepable::resolve_subnets::<u32>(v4_raw);
+        let v6_resolved = sweepable::resolve_subnets::<u128>(v6_raw);
 
         let mut batch = Batch::new();
 
@@ -637,14 +626,25 @@ impl RouteController for NetworkManager {
             }))));
         }
 
-        for (elements, map) in [(v4_elements, MAP_SUBNET_V4_MARK), (v6_elements, MAP_SUBNET_V6_MARK)] {
-            if !elements.is_empty() {
-                batch.add(NfListObject::Element(Element {
-                    family: NfFamily::INet,
-                    table: self.nft_table_name.clone().into(),
-                    name: map.into(),
-                    elem: elements.into(),
-                }));
+        for (resolved, map) in [(v4_resolved, MAP_SUBNET_V4_MARK), (v6_resolved, MAP_SUBNET_V6_MARK)] {
+            if !resolved.is_empty() {
+                let mut elements = Vec::new();
+                for (net, fwmark) in resolved {
+                    let prefix = Expression::Named(NamedExpression::Prefix(Prefix {
+                        addr: Box::new(Expression::String(net.network().to_string().into())),
+                        len: net.prefix_len() as u32,
+                    }));
+                    elements.push(Expression::List(vec![prefix, Expression::Number(fwmark)]));
+                }
+
+                for chunk in elements.chunks(1000) {
+                    batch.add(NfListObject::Element(Element {
+                        family: NfFamily::INet,
+                        table: self.nft_table_name.clone().into(),
+                        name: map.into(),
+                        elem: chunk.to_vec().into(),
+                    }));
+                }
             }
         }
 
@@ -652,3 +652,4 @@ impl RouteController for NetworkManager {
         Ok(())
     }
 }
+

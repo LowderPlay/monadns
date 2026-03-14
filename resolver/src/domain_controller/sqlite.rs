@@ -385,19 +385,21 @@ impl SqliteController {
         Ok(())
     }
 
-    pub async fn get_all_subnets(&self) -> anyhow::Result<Vec<(String, Option<String>)>> {
+    pub async fn get_all_subnets(&self) -> anyhow::Result<Vec<(String, Option<String>, i64)>> {
         let mut subnets = Vec::new();
         let mut seen = std::collections::HashSet::new();
 
+        // 1. IP Rules - Give them very high priority (e.g. 1000000)
         let rules = self.list_ip_rules().await?;
         for rule in rules {
             if seen.insert(rule.subnet.clone()) {
-                subnets.push((rule.subnet, rule.interface));
+                subnets.push((rule.subnet, rule.interface, 1000000));
             }
         }
 
+        // 2. IP Lists (Ordered by priority)
         let rows = sqlx::query(
-            "SELECT list_ips.subnet, ip_lists.interface 
+            "SELECT list_ips.subnet, ip_lists.interface, ip_lists.priority 
              FROM list_ips 
              JOIN ip_lists ON list_ips.list_id = ip_lists.id
              ORDER BY ip_lists.priority DESC, ip_lists.id ASC"
@@ -408,13 +410,15 @@ impl SqliteController {
         for row in rows {
             let subnet: String = row.get(0);
             let interface: Option<String> = row.get(1);
+            let priority: i64 = row.get(2);
             if seen.insert(subnet.clone()) {
-                subnets.push((subnet, interface));
+                subnets.push((subnet, interface, priority));
             }
         }
 
+        // 3. GeoIP (Associated with ip_lists via virtual URL)
         let geo_rows = sqlx::query(
-            "SELECT geoip_data.subnet, ip_lists.interface 
+            "SELECT geoip_data.subnet, ip_lists.interface, ip_lists.priority 
              FROM geoip_data 
              JOIN ip_lists ON ip_lists.url = 'geoip://' || geoip_data.category
              ORDER BY ip_lists.priority DESC, ip_lists.id ASC"
@@ -425,8 +429,9 @@ impl SqliteController {
         for row in geo_rows {
             let subnet: String = row.get(0);
             let interface: Option<String> = row.get(1);
+            let priority: i64 = row.get(2);
             if seen.insert(subnet.clone()) {
-                subnets.push((subnet, interface));
+                subnets.push((subnet, interface, priority));
             }
         }
 

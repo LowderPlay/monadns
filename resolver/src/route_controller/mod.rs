@@ -1,4 +1,5 @@
 pub mod nftables;
+mod sweepable;
 
 use std::net::IpAddr;
 use async_trait::async_trait;
@@ -8,7 +9,7 @@ pub trait RouteController: Send + Sync {
     async fn add_mapping(&self, fake_ip: IpAddr, real_ip: IpAddr, fwmark: u32) -> anyhow::Result<()>;
     async fn cleanup(&self) -> anyhow::Result<()>;
     async fn fetch_metrics(&self) -> anyhow::Result<()>;
-    async fn sync_subnets(&self, subnets: Vec<(String, u32)>) -> anyhow::Result<()>;
+    async fn sync_subnets(&self, subnets: Vec<(String, u32, i64)>) -> anyhow::Result<()>;
 }
 
 #[derive(Clone)]
@@ -30,7 +31,7 @@ impl RouteController for DummyRouteController {
         Ok(())
     }
 
-    async fn sync_subnets(&self, subnets: Vec<(String, u32)>) -> anyhow::Result<()> {
+    async fn sync_subnets(&self, subnets: Vec<(String, u32, i64)>) -> anyhow::Result<()> {
         println!("syncing {} subnets", subnets.len());
         Ok(())
     }
