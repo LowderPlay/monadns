@@ -160,7 +160,7 @@ impl RequestHandler for FakeIpHandler {
                 Record::from_rdata(
                     Name::from_str("interface.monadns.").unwrap(),
                     60,
-                    RData::TXT(TXT::new(vec![interface]))),
+                    RData::TXT(TXT::new(vec![actual_interface_name.to_string()]))),
             ];
 
             let response = builder.build(header, &records, [], [], &additionals);
