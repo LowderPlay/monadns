@@ -397,36 +397,25 @@ impl SqliteController {
             }
         }
 
-        // 2. IP Lists (Ordered by priority)
+        // 2. IP Lists and GeoIP (Combined and ordered by priority)
         let rows = sqlx::query(
-            "SELECT list_ips.subnet, ip_lists.interface, ip_lists.priority 
-             FROM list_ips 
-             JOIN ip_lists ON list_ips.list_id = ip_lists.id
-             ORDER BY ip_lists.priority DESC, ip_lists.id ASC"
+            "SELECT subnet, interface, priority FROM (
+                SELECT list_ips.subnet, ip_lists.interface, ip_lists.priority, ip_lists.id
+                FROM list_ips 
+                JOIN ip_lists ON list_ips.list_id = ip_lists.id
+                
+                UNION ALL
+                
+                SELECT geoip_data.subnet, ip_lists.interface, ip_lists.priority, ip_lists.id
+                FROM geoip_data 
+                JOIN ip_lists ON ip_lists.url = 'geoip://' || geoip_data.category
+            )
+            ORDER BY priority DESC, id ASC"
         )
         .fetch_all(&self.pool)
         .await?;
 
         for row in rows {
-            let subnet: String = row.get(0);
-            let interface: Option<String> = row.get(1);
-            let priority: i64 = row.get(2);
-            if seen.insert(subnet.clone()) {
-                subnets.push((subnet, interface, priority));
-            }
-        }
-
-        // 3. GeoIP (Associated with ip_lists via virtual URL)
-        let geo_rows = sqlx::query(
-            "SELECT geoip_data.subnet, ip_lists.interface, ip_lists.priority 
-             FROM geoip_data 
-             JOIN ip_lists ON ip_lists.url = 'geoip://' || geoip_data.category
-             ORDER BY ip_lists.priority DESC, ip_lists.id ASC"
-        )
-        .fetch_all(&self.pool)
-        .await?;
-
-        for row in geo_rows {
             let subnet: String = row.get(0);
             let interface: Option<String> = row.get(1);
             let priority: i64 = row.get(2);
@@ -450,32 +439,24 @@ impl SqliteController {
         }
 
         let rows = sqlx::query(
-            "SELECT list_domains.domain 
-             FROM list_domains 
-             JOIN domain_lists ON list_domains.list_id = domain_lists.id
-             ORDER BY domain_lists.priority DESC, domain_lists.id ASC"
+            "SELECT domain FROM (
+                SELECT list_domains.domain, domain_lists.priority, domain_lists.id
+                FROM list_domains 
+                JOIN domain_lists ON list_domains.list_id = domain_lists.id
+                
+                UNION ALL
+                
+                SELECT geosite_data.domain, domain_lists.priority, domain_lists.id
+                FROM geosite_data 
+                JOIN domain_lists ON domain_lists.url = 'geosite://' || geosite_data.category
+                WHERE geosite_data.type IN (2, 3)
+            )
+            ORDER BY priority DESC, id ASC"
         )
         .fetch_all(&self.pool)
         .await?;
 
         for row in rows {
-            let domain: String = row.get(0);
-            if seen.insert(domain.clone()) {
-                domains.push(domain);
-            }
-        }
-
-        let geo_rows = sqlx::query(
-            "SELECT geosite_data.domain 
-             FROM geosite_data 
-             JOIN domain_lists ON domain_lists.url = 'geosite://' || geosite_data.category
-             WHERE geosite_data.type IN (2, 3)
-             ORDER BY domain_lists.priority DESC, domain_lists.id ASC"
-        )
-        .fetch_all(&self.pool)
-        .await?;
-
-        for row in geo_rows {
             let domain: String = row.get(0);
             if seen.insert(domain.clone()) {
                 domains.push(domain);
@@ -718,81 +699,91 @@ impl DomainController for SqliteController {
             error!("Error querying domain_rules: {}", e);
         }
 
-        // 2. Check list domains (Ordered by list priority)
+        // 2. Check list domains and geosite lists (Combined and ordered by list priority)
         let mut qb = sqlx::QueryBuilder::<sqlx::Sqlite>::new(
-            "SELECT list_domains.list_id, list_domains.domain, domain_lists.include_subdomains, domain_lists.interface 
-             FROM list_domains 
-             JOIN domain_lists ON list_domains.list_id = domain_lists.id 
-             WHERE list_domains.domain IN ("
+            "SELECT list_id, domain, include_subdomains, interface, priority, hit_type, category FROM (
+                SELECT 
+                    list_domains.list_id, 
+                    list_domains.domain, 
+                    domain_lists.include_subdomains, 
+                    domain_lists.interface, 
+                    domain_lists.priority,
+                    -1 as hit_type,
+                    '' as category,
+                    domain_lists.id as sorting_id
+                FROM list_domains 
+                JOIN domain_lists ON list_domains.list_id = domain_lists.id 
+                WHERE list_domains.domain IN ("
         );
         let mut separated = qb.separated(", ");
         for d in &check_domains {
             separated.push_bind(d);
         }
-        separated.push_unseparated(") ORDER BY domain_lists.priority ASC, length(list_domains.domain) DESC, domain_lists.id ASC");
+        separated.push_unseparated(")
+                UNION ALL
+                SELECT 
+                    domain_lists.id as list_id, 
+                    geosite_data.domain, 
+                    1 as include_subdomains,
+                    domain_lists.interface, 
+                    domain_lists.priority,
+                    geosite_data.type as hit_type,
+                    geosite_data.category,
+                    domain_lists.id as sorting_id
+                FROM geosite_data 
+                JOIN domain_lists ON domain_lists.url = 'geosite://' || geosite_data.category 
+                WHERE geosite_data.domain IN ("
+        );
+        let mut separated = qb.separated(", ");
+        for d in &check_domains {
+            separated.push_bind(d);
+        }
+        separated.push_unseparated(")
+            ) ORDER BY priority DESC, length(domain) DESC, sorting_id ASC");
 
-        let list_result = qb.build().fetch_all(&self.pool).await;
-        if let Ok(rows) = list_result {
+        let result = qb.build().fetch_all(&self.pool).await;
+        if let Ok(rows) = result {
             for row in rows {
                 let list_id: i64 = row.get(0);
                 let hit_domain: String = row.get(1);
                 let include_subdomains: bool = row.get(2);
                 let interface: Option<String> = row.get(3);
-                if hit_domain == domain || include_subdomains {
-                    let interface = interface.unwrap_or_else(|| "default".to_string());
-                    metrics::counter!("list_hits", 
-                        "list_id" => list_id.to_string(), 
-                        "subdomain" => (hit_domain != domain).to_string(), 
-                        "interface" => interface.to_string()).increment(1);
-                    return Some(Intercept { interface, reason: InterceptReason::List(list_id) });
-                }
-            }
-        } else if let Err(e) = list_result {
-            error!("Error querying list_domains: {}", e);
-        }
+                let _priority: i64 = row.get(4);
+                let hit_type: i32 = row.get(5);
+                let category: String = row.get(6);
 
-        // 3. Check geosite lists (Ordered by list priority)
-        let mut qb = sqlx::QueryBuilder::<sqlx::Sqlite>::new(
-            "SELECT domain_lists.id, domain_lists.interface, geosite_data.domain, geosite_data.type, geosite_data.category 
-             FROM geosite_data 
-             JOIN domain_lists ON domain_lists.url = 'geosite://' || geosite_data.category 
-             WHERE geosite_data.domain IN ("
-        );
-        let mut separated = qb.separated(", ");
-        for d in &check_domains {
-            separated.push_bind(d);
-        }
-        separated.push_unseparated(") ORDER BY domain_lists.priority ASC, length(geosite_data.domain) DESC, domain_lists.id ASC");
-
-        let geosite_result = qb.build().fetch_all(&self.pool).await;
-        if let Ok(rows) = geosite_result {
-            for row in rows {
-                let list_id: i64 = row.get(0);
-                let interface: Option<String> = row.get(1);
-                let hit_domain: String = row.get(2);
-                let hit_type: i32 = row.get(3);
-                let category: String = row.get(4);
-                
-                // hit_type: Plain = 0, Regex = 1, Domain = 2, Full = 3
-                let matches = if hit_type == 3 { // Full
-                    hit_domain == domain
-                } else if hit_type == 2 { // Domain (suffix)
-                    true // Since it's in check_domains, it's either the domain itself or a parent.
+                let matches = if hit_type == -1 {
+                    // Regular list domain
+                    hit_domain == domain || include_subdomains
                 } else {
-                    false // keywords and regex not supported via this fast path
+                    // Geosite entry: Plain = 0, Regex = 1, Domain = 2, Full = 3
+                    if hit_type == 3 { // Full
+                        hit_domain == domain
+                    } else if hit_type == 2 { // Domain (suffix)
+                        true // Since it's in check_domains, it's either the domain itself or a parent.
+                    } else {
+                        false
+                    }
                 };
 
                 if matches {
                     let interface = interface.unwrap_or_else(|| "default".to_string());
-                    metrics::counter!("geosite_hits", 
-                        "list_id" => list_id.to_string(), 
-                        "category" => category, 
-                        "interface" => interface.to_string()).increment(1);
+                    if hit_type == -1 {
+                        metrics::counter!("list_hits", 
+                            "list_id" => list_id.to_string(), 
+                            "subdomain" => (hit_domain != domain).to_string(), 
+                            "interface" => interface.to_string()).increment(1);
+                    } else {
+                        metrics::counter!("geosite_hits", 
+                            "list_id" => list_id.to_string(), 
+                            "category" => category, 
+                            "interface" => interface.to_string()).increment(1);
+                    }
                     return Some(Intercept { interface, reason: InterceptReason::List(list_id) });
                 }
             }
-        } else if let Err(e) = geosite_result {
-            error!("Error querying geosite_data: {}", e);
+        } else if let Err(e) = result {
+            error!("Error querying combined list domains: {}", e);
         }
 
         None
