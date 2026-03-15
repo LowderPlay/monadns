@@ -729,7 +729,7 @@ impl DomainController for SqliteController {
         for d in &check_domains {
             separated.push_bind(d);
         }
-        separated.push_unseparated(") ORDER BY domain_lists.priority DESC, domain_lists.id ASC, length(list_domains.domain) DESC");
+        separated.push_unseparated(") ORDER BY domain_lists.priority ASC, length(list_domains.domain) DESC, domain_lists.id ASC");
 
         let list_result = qb.build().fetch_all(&self.pool).await;
         if let Ok(rows) = list_result {
@@ -762,7 +762,7 @@ impl DomainController for SqliteController {
         for d in &check_domains {
             separated.push_bind(d);
         }
-        separated.push_unseparated(") ORDER BY domain_lists.priority DESC, domain_lists.id ASC, length(geosite_data.domain) DESC");
+        separated.push_unseparated(") ORDER BY domain_lists.priority ASC, length(geosite_data.domain) DESC, domain_lists.id ASC");
 
         let geosite_result = qb.build().fetch_all(&self.pool).await;
         if let Ok(rows) = geosite_result {
