@@ -8,7 +8,7 @@ use serde::{Deserialize, Serialize};
 use utoipa::ToSchema;
 use chrono::{DateTime, Utc};
 use tokio::time::Instant;
-use crate::domain_controller::DomainController;
+use crate::domain_controller::{DomainController, Intercept, InterceptReason};
 
 #[derive(Debug, Serialize, Deserialize, FromRow, ToSchema)]
 pub struct DomainRule {
@@ -677,7 +677,7 @@ impl SqliteController {
 
 #[async_trait]
 impl DomainController for SqliteController {
-    async fn should_intercept(&self, domain: &str) -> Option<String> {
+    async fn should_intercept(&self, domain: &str) -> Option<Intercept> {
         let domain = domain.trim_end_matches('.');
         let mut check_domains = vec![domain.to_string()];
         
@@ -711,7 +711,7 @@ impl DomainController for SqliteController {
                         "subdomain" => (rule_domain != domain).to_string(), 
                         "domain" => rule_domain, 
                         "interface" => interface.to_string()).increment(1);
-                    return Some(interface);
+                    return Some(Intercept { interface, reason: InterceptReason::Domain });
                 }
             }
         } else if let Err(e) = rules_result {
@@ -744,7 +744,7 @@ impl DomainController for SqliteController {
                         "list_id" => list_id.to_string(), 
                         "subdomain" => (hit_domain != domain).to_string(), 
                         "interface" => interface.to_string()).increment(1);
-                    return Some(interface);
+                    return Some(Intercept { interface, reason: InterceptReason::List(list_id) });
                 }
             }
         } else if let Err(e) = list_result {
@@ -788,7 +788,7 @@ impl DomainController for SqliteController {
                         "list_id" => list_id.to_string(), 
                         "category" => category, 
                         "interface" => interface.to_string()).increment(1);
-                    return Some(interface);
+                    return Some(Intercept { interface, reason: InterceptReason::List(list_id) });
                 }
             }
         } else if let Err(e) = geosite_result {

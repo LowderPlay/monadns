@@ -1,4 +1,5 @@
 use std::net::IpAddr;
+use std::str::FromStr;
 use std::sync::Arc;
 use arc_swap::ArcSwap;
 use hickory_resolver::TokioResolver;
@@ -6,11 +7,11 @@ use hickory_server::server::{Request, RequestHandler, ResponseHandler, ResponseI
 use hickory_proto::op::{Header, ResponseCode};
 use hickory_server::authority::MessageResponseBuilder;
 use hickory_proto::ProtoErrorKind;
-use hickory_proto::rr::RData;
-use hickory_proto::rr::rdata::{A, AAAA, HTTPS, SVCB};
+use hickory_proto::rr::{Name, RData, Record};
+use hickory_proto::rr::rdata::{A, AAAA, HTTPS, SVCB, TXT};
 use hickory_proto::rr::rdata::svcb::{IpHint, SvcParamValue};
 use log::{debug, error};
-use crate::domain_controller::DomainController;
+use crate::domain_controller::{DomainController, Intercept};
 use crate::fake_ip::IpManager;
 use crate::route_controller::RouteController;
 
@@ -105,8 +106,8 @@ impl RequestHandler for FakeIpHandler {
             }
         };
 
-        if let Some(interface_name) = state.domain_controller.should_intercept(&name).await {
-            let iface_config = state.config.resolve_interface(Some(&interface_name));
+        if let Some(Intercept { interface, reason }) = state.domain_controller.should_intercept(&name).await {
+            let iface_config = state.config.resolve_interface(Some(&interface));
             
             let fwmark = iface_config.fwmark;
             let actual_interface_name = &iface_config.name;
@@ -151,7 +152,18 @@ impl RequestHandler for FakeIpHandler {
                 }.set_ttl(60);
             }
 
-            let response = builder.build(header, &records, [], [], []);
+            let additionals = [
+                Record::from_rdata(
+                    Name::from_str("reason.monadns.").unwrap(),
+                    60,
+                    RData::TXT(TXT::new(vec![reason.to_string()]))),
+                Record::from_rdata(
+                    Name::from_str("interface.monadns.").unwrap(),
+                    60,
+                    RData::TXT(TXT::new(vec![interface]))),
+            ];
+
+            let response = builder.build(header, &records, [], [], &additionals);
             metrics::counter!("dns_queries_total", "type" => query_type, "intercepted" => "true", "response_code" => "No Error").increment(1);
             return response_handle.send_response(response).await.unwrap();
         }

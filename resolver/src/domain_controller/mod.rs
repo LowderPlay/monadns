@@ -1,11 +1,31 @@
 pub mod sqlite;
 
 use std::collections::HashSet;
+use std::fmt::{Display, Formatter};
 use async_trait::async_trait;
+
+pub struct Intercept {
+    pub interface: String,
+    pub reason: InterceptReason
+}
+
+pub enum InterceptReason {
+    List(i64),
+    Domain,
+}
+
+impl Display for InterceptReason {
+    fn fmt(&self, f: &mut Formatter<'_>) -> std::fmt::Result {
+        match self {
+            InterceptReason::List(id) => write!(f, "{}", id),
+            InterceptReason::Domain => write!(f, "domain"),
+        }
+    }
+}
 
 #[async_trait]
 pub trait DomainController: Send + Sync {
-    async fn should_intercept(&self, domain: &str) -> Option<String>;
+    async fn should_intercept(&self, domain: &str) -> Option<Intercept>;
 }
 
 #[allow(dead_code)]
@@ -24,9 +44,9 @@ impl DummyDomainController {
 
 #[async_trait]
 impl DomainController for DummyDomainController {
-    async fn should_intercept(&self, domain: &str) -> Option<String> {
+    async fn should_intercept(&self, domain: &str) -> Option<Intercept> {
         if self.domains.contains(domain) {
-            Some("default".to_string())
+            Some(Intercept { interface: "default".to_string(), reason: InterceptReason::List(0) })
         } else {
             None
         }
