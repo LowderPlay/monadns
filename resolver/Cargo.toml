@@ -7,7 +7,7 @@ edition = "2024"
 hickory-server = "0.26.0-alpha.1"
 hickory-resolver = { version = "0.26.0-alpha.1", features = ["tokio", "webpki-roots", "https-ring", "serde"] }
 hickory-proto = "0.26.0-alpha.1"
-arc-swap = "1.7.1"
+arc-swap = "1.9.0"
 async-trait = "0.1.89"
 tokio = { workspace = true }
 dashmap = "7.0.0-rc2"
