@@ -25,6 +25,12 @@ This functionality provides a lightweight, transparent proxying mechanism akin t
 - **Sidecar Gateway**: Run MonaDNS on a separate device (like a Raspberry Pi) in your network. Set the Fake IP subnets (`198.18.0.0/15` and `fd32:bfcc:fba0:1337::/64` by default) as static routes on your main router pointing to the MonaDNS device. Clients using MonaDNS as their DNS server will have their traffic automatically routed through it for configured domains.
 - **VPN Server Smart Routing**: Deploy MonaDNS on a VPN server (WireGuard, OpenVPN). By pushing MonaDNS as the DNS server to VPN clients, you can steer specific client traffic through different exit nodes or local interfaces based on the requested domain or destination IP.
 
+> [!IMPORTANT]
+> If you deploy MonaDNS as a sidecar gateway, make sure the return path is symmetric.
+> If the sidecar and clients are on the same L2 network or subnet, Linux may send reply packets directly back to the client instead of through the main router.
+> That bypasses the router's stateful path, so conntrack/NAT on the router may not see the return traffic for established flows. The result is asymmetric routing: short connections may appear to work, but long-lived TCP sessions can stall, be reset, or stop working after the router's state expires.
+> In practice, ensure that both directions of the flow traverse the same gateway, or use SNAT/masquerade/policy routing so replies are forced back through the router that owns the connection state.
+
 ## Architecture
 
 The project is structured into two main components:
