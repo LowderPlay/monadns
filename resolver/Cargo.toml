@@ -4,7 +4,7 @@ version = "0.3.0"
 edition = "2024"
 
 [dependencies]
-hickory-server = "0.26.0-alpha.1"
+hickory-server = "0.26.0-beta.2"
 hickory-resolver = { version = "0.26.0-alpha.1", features = ["tokio", "webpki-roots", "https-ring", "serde"] }
 hickory-proto = "0.26.0-alpha.1"
 arc-swap = "1.9.0"
