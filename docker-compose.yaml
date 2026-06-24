@@ -6,6 +6,7 @@ services:
     # The resolver needs CAP_NET_ADMIN to manage nftables rules
     cap_add:
       - NET_ADMIN
+      - NET_RAW
     # network_mode host is usually required, since the resolver manages nftables rules and adds routes
     network_mode: host
     environment:

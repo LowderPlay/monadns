@@ -88,6 +88,9 @@ default_interface = "wg0"
 ipv4_subnet = "198.18.0.0/15"
 ipv6_subnet = "fd32:bfcc:fba0:1337::/64"
 export_enabled = false
+health_check_interval_seconds = 15
+health_check_timeout_seconds = 12
+health_check_ping_count = 5
 
 [[interfaces]]
 name = "wg0"
@@ -95,15 +98,34 @@ fwmark = 1
 table_id = 100
 tcp_mss_clamp = 1280
 ipv4_snat = "10.10.10.4"
+health_check_enabled = true
+health_check_hosts = ["1.1.1.1", "2606:4700:4700::1111"]
+health_check_latency_threshold_ms = 500
+health_check_packet_loss_threshold_percent = 50
 
 [[interfaces]]
 name = "eth0"
 fwmark = 2
 table_id = 101
+health_check_enabled = true
+health_check_hosts = ["8.8.8.8", "2001:4860:4860::8888"]
+health_check_latency_threshold_ms = 500
+health_check_packet_loss_threshold_percent = 50
 
 [upstream_resolver]
 type = "Quad9Https"
 ```
+
+Each enabled interface/host pair is checked using the global interval, timeout,
+and ping count, with ICMP echo requests bound to that interface. Prometheus exposes `interface_healthy`,
+`interface_latency_milliseconds`, `interface_latency_available`,
+`interface_packet_loss_percent`, `interface_health_check_enabled`,
+`interface_latency_threshold_milliseconds`,
+`interface_packet_loss_threshold_percent`,
+`interface_health_check_interval_seconds`,
+`interface_health_check_timeout_seconds`, `interface_health_check_ping_count`,
+`interface_health_checks_total`, and `interface_health_check_failures_total`,
+labelled by `interface` and `host`.
 
 #### Upstream Resolver Types
 - `Quad9Https`, `CloudflareHttps`, `GoogleHttps`

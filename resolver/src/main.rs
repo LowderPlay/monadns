@@ -1,26 +1,26 @@
+mod api;
+mod app;
+mod config;
+mod domain_controller;
+pub mod error;
 mod fake_ip;
 mod handler;
-mod domain_controller;
+mod health_check;
 mod route_controller;
-mod config;
-mod app;
-mod api;
-pub mod error;
 
-use std::sync::Arc;
+use crate::app::App;
+use crate::config::Config;
 use env_logger::Env;
 use hickory_server::ServerFuture;
 use log::info;
+use std::sync::Arc;
 use tokio::net::UdpSocket;
-use tokio::signal::unix::{signal, SignalKind};
-use crate::app::App;
-use crate::config::Config;
+use tokio::signal::unix::{SignalKind, signal};
 
 #[tokio::main]
 async fn main() -> anyhow::Result<()> {
-    env_logger::Builder::from_env(Env::default().default_filter_or("info"))
-        .init();
-    
+    env_logger::Builder::from_env(Env::default().default_filter_or("info")).init();
+
     let config = Config::load()?;
 
     if let Some(metrics_bind) = Config::get_metrics_bind() {
@@ -32,7 +32,7 @@ async fn main() -> anyhow::Result<()> {
 
     let app = Arc::new(App::new(config).await?);
     let handler = app.handler();
-    
+
     let mut server = ServerFuture::new(handler.clone());
     let socket = UdpSocket::bind(Config::get_dns_bind()).await?;
     server.register_socket(socket);

@@ -1,14 +1,32 @@
-use std::net::{IpAddr, Ipv4Addr, SocketAddr};
-use std::str::FromStr;
-use hickory_resolver::config::{ResolverConfig, ResolverOpts, NameServerConfig, ProtocolConfig};
-use ipnet::{Ipv4Net, Ipv6Net};
-use serde::{Deserialize, Serialize};
-use std::path::PathBuf;
-use std::sync::Arc;
 use hickory_proto::http::DEFAULT_DNS_QUERY_PATH;
+use hickory_resolver::config::{NameServerConfig, ProtocolConfig, ResolverConfig, ResolverOpts};
+use ipnet::{Ipv4Net, Ipv6Net};
 use log::{info, warn};
+use serde::{Deserialize, Serialize};
+use std::net::{IpAddr, Ipv4Addr, SocketAddr};
+use std::path::PathBuf;
+use std::str::FromStr;
+use std::sync::Arc;
+
+fn deserialize_health_check_hosts<'de, D>(deserializer: D) -> Result<Vec<String>, D::Error>
+where
+    D: serde::Deserializer<'de>,
+{
+    #[derive(Deserialize)]
+    #[serde(untagged)]
+    enum Hosts {
+        One(String),
+        Many(Vec<String>),
+    }
+
+    match Hosts::deserialize(deserializer)? {
+        Hosts::One(host) => Ok(vec![host]),
+        Hosts::Many(hosts) => Ok(hosts),
+    }
+}
 
 #[derive(Clone, Debug, Serialize, Deserialize, utoipa::ToSchema)]
+#[serde(default)]
 pub struct InterfaceConfig {
     pub name: String,
     pub fwmark: u32,
@@ -18,21 +36,47 @@ pub struct InterfaceConfig {
     pub ipv4_snat: Option<IpAddr>,
     #[schema(value_type = Option<String>)]
     pub ipv6_snat: Option<IpAddr>,
+    pub health_check_enabled: bool,
+    #[serde(
+        alias = "health_check_host",
+        deserialize_with = "deserialize_health_check_hosts"
+    )]
+    pub health_check_hosts: Vec<String>,
+    pub health_check_latency_threshold_ms: f64,
+    pub health_check_packet_loss_threshold_percent: f64,
+}
+
+impl Default for InterfaceConfig {
+    fn default() -> Self {
+        Self {
+            name: "wg0".to_string(),
+            fwmark: 1,
+            table_id: 100,
+            tcp_mss_clamp: Some(1280),
+            ipv4_snat: Some(IpAddr::V4(Ipv4Addr::new(10, 10, 10, 4))),
+            ipv6_snat: None,
+            health_check_enabled: true,
+            health_check_hosts: vec!["1.1.1.1".to_string(), "2606:4700:4700::1111".to_string()],
+            health_check_latency_threshold_ms: 500.0,
+            health_check_packet_loss_threshold_percent: 50.0,
+        }
+    }
 }
 
 #[derive(Clone, Debug, Serialize, Deserialize, utoipa::ToSchema)]
+#[serde(default)]
 pub struct Config {
-    #[serde(default)]
     pub interfaces: Vec<InterfaceConfig>,
-    #[serde(default)]
     pub default_interface: String,
     #[schema(value_type = String)]
     pub ipv4_subnet: Ipv4Net,
     #[schema(value_type = String)]
     pub ipv6_subnet: Ipv6Net,
     pub upstream_resolver: UpstreamResolverConfig,
-    #[serde(default)]
     pub export_enabled: bool,
+    pub health_check_interval_seconds: u64,
+    pub health_check_timeout_seconds: u64,
+    pub health_check_ping_count: u32,
 
     // Backwards compatibility fields
     #[serde(skip_serializing, default)]
@@ -50,19 +94,15 @@ pub struct Config {
 impl Default for Config {
     fn default() -> Self {
         Self {
-            interfaces: vec![InterfaceConfig {
-                name: "wg0".to_string(),
-                fwmark: 1,
-                table_id: 100,
-                tcp_mss_clamp: Some(1280),
-                ipv4_snat: Some(IpAddr::V4(Ipv4Addr::new(10, 10, 10, 4))),
-                ipv6_snat: None,
-            }],
+            interfaces: vec![InterfaceConfig::default()],
             default_interface: "wg0".to_string(),
             ipv4_subnet: Ipv4Net::from_str("198.18.0.0/15").unwrap(),
             ipv6_subnet: Ipv6Net::from_str("fd32:bfcc:fba0:1337::/64").unwrap(),
             upstream_resolver: UpstreamResolverConfig::Quad9Https,
             export_enabled: false,
+            health_check_interval_seconds: 15,
+            health_check_timeout_seconds: 12,
+            health_check_ping_count: 5,
             table_id: None,
             iface: None,
             tcp_mss_clamp: None,
@@ -82,6 +122,9 @@ pub struct PatchConfig {
     pub ipv6_subnet: Option<Ipv6Net>,
     pub upstream_resolver: Option<UpstreamResolverConfig>,
     pub export_enabled: Option<bool>,
+    pub health_check_interval_seconds: Option<u64>,
+    pub health_check_timeout_seconds: Option<u64>,
+    pub health_check_ping_count: Option<u32>,
 }
 
 impl Config {
@@ -101,18 +144,24 @@ impl Config {
         }
 
         let content = std::fs::read_to_string(&path)?;
+        let interfaces_configured = toml::from_str::<toml::Value>(&content)?
+            .as_table()
+            .is_some_and(|table| table.contains_key("interfaces"));
         let mut config: Config = toml::from_str(&content)?;
 
         // Migration logic for backwards compatibility
+        if !interfaces_configured {
+            config.interfaces.clear();
+        }
         if config.interfaces.is_empty() {
             let name = config.iface.clone().unwrap_or_else(|| "wg0".to_string());
             config.interfaces.push(InterfaceConfig {
                 name: name.clone(),
-                fwmark: 1,
                 table_id: config.table_id.unwrap_or(100),
                 tcp_mss_clamp: config.tcp_mss_clamp,
                 ipv4_snat: config.ipv4_snat,
                 ipv6_snat: config.ipv6_snat,
+                ..InterfaceConfig::default()
             });
             if config.default_interface.is_empty() {
                 config.default_interface = name;
@@ -145,13 +194,11 @@ impl Config {
     }
 
     pub fn get_dns_bind() -> String {
-        std::env::var("MONADNS_DNS_BIND")
-            .unwrap_or_else(|_| "[::]:5553".to_string())
+        std::env::var("MONADNS_DNS_BIND").unwrap_or_else(|_| "[::]:5553".to_string())
     }
 
     pub fn get_http_bind() -> String {
-        std::env::var("MONADNS_HTTP_BIND")
-            .unwrap_or_else(|_| "[::]:8080".to_string())
+        std::env::var("MONADNS_HTTP_BIND").unwrap_or_else(|_| "[::]:8080".to_string())
     }
 
     pub fn get_metrics_bind() -> Option<String> {
@@ -161,11 +208,24 @@ impl Config {
     pub fn patch(&self, patch: PatchConfig) -> Self {
         Self {
             interfaces: patch.interfaces.unwrap_or_else(|| self.interfaces.clone()),
-            default_interface: patch.default_interface.unwrap_or_else(|| self.default_interface.clone()),
+            default_interface: patch
+                .default_interface
+                .unwrap_or_else(|| self.default_interface.clone()),
             ipv4_subnet: patch.ipv4_subnet.unwrap_or(self.ipv4_subnet),
             ipv6_subnet: patch.ipv6_subnet.unwrap_or(self.ipv6_subnet),
-            upstream_resolver: patch.upstream_resolver.unwrap_or_else(|| self.upstream_resolver.clone()),
+            upstream_resolver: patch
+                .upstream_resolver
+                .unwrap_or_else(|| self.upstream_resolver.clone()),
             export_enabled: patch.export_enabled.unwrap_or(self.export_enabled),
+            health_check_interval_seconds: patch
+                .health_check_interval_seconds
+                .unwrap_or(self.health_check_interval_seconds),
+            health_check_timeout_seconds: patch
+                .health_check_timeout_seconds
+                .unwrap_or(self.health_check_timeout_seconds),
+            health_check_ping_count: patch
+                .health_check_ping_count
+                .unwrap_or(self.health_check_ping_count),
             table_id: None,
             iface: None,
             tcp_mss_clamp: None,
@@ -180,9 +240,14 @@ impl Config {
             Some(name) => name,
         };
 
-        self.interfaces.iter()
+        self.interfaces
+            .iter()
             .find(|i| i.name == *name)
-            .or_else(|| self.interfaces.iter().find(|i| i.name == self.default_interface))
+            .or_else(|| {
+                self.interfaces
+                    .iter()
+                    .find(|i| i.name == self.default_interface)
+            })
             .unwrap_or_else(|| {
                 if !self.interfaces.is_empty() {
                     &self.interfaces[0]
@@ -227,9 +292,15 @@ impl Default for UpstreamResolverConfig {
 impl UpstreamResolverConfig {
     pub fn to_resolver_parts(&self) -> (ResolverConfig, ResolverOpts) {
         match self {
-            UpstreamResolverConfig::Quad9Https => (ResolverConfig::quad9_https(), ResolverOpts::default()),
-            UpstreamResolverConfig::CloudflareHttps => (ResolverConfig::cloudflare_https(), ResolverOpts::default()),
-            UpstreamResolverConfig::GoogleHttps => (ResolverConfig::google_https(), ResolverOpts::default()),
+            UpstreamResolverConfig::Quad9Https => {
+                (ResolverConfig::quad9_https(), ResolverOpts::default())
+            }
+            UpstreamResolverConfig::CloudflareHttps => {
+                (ResolverConfig::cloudflare_https(), ResolverOpts::default())
+            }
+            UpstreamResolverConfig::GoogleHttps => {
+                (ResolverConfig::google_https(), ResolverOpts::default())
+            }
             UpstreamResolverConfig::Custom { nameservers } => {
                 let mut config = ResolverConfig::from_parts(None, vec![], vec![]);
                 for ns in nameservers {
@@ -252,12 +323,18 @@ impl UpstreamResolverConfig {
                         protocol: match ns.protocol {
                             ResolverProtocol::Plain => ProtocolConfig::Udp,
                             ResolverProtocol::Tls => ProtocolConfig::Tls {
-                                server_name: ns.tls_dns_name.clone()
-                                    .unwrap_or_else(|| "".to_string()).into()
+                                server_name: ns
+                                    .tls_dns_name
+                                    .clone()
+                                    .unwrap_or_else(|| "".to_string())
+                                    .into(),
                             },
                             ResolverProtocol::Https => ProtocolConfig::Https {
-                                server_name: ns.tls_dns_name.clone()
-                                    .unwrap_or_else(|| "".to_string()).into(),
+                                server_name: ns
+                                    .tls_dns_name
+                                    .clone()
+                                    .unwrap_or_else(|| "".to_string())
+                                    .into(),
                                 path: Arc::from(DEFAULT_DNS_QUERY_PATH),
                             },
                         },
@@ -268,5 +345,68 @@ impl UpstreamResolverConfig {
                 (config, ResolverOpts::default())
             }
         }
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn loads_legacy_single_health_check_host() {
+        let config: Config = toml::from_str(
+            r#"
+default_interface = "wg0"
+ipv4_subnet = "198.18.0.0/15"
+ipv6_subnet = "fd32:bfcc:fba0:1337::/64"
+
+[[interfaces]]
+name = "wg0"
+fwmark = 1
+table_id = 100
+health_check_host = "1.1.1.1"
+
+[upstream_resolver]
+type = "Quad9Https"
+"#,
+        )
+        .unwrap();
+
+        assert_eq!(config.interfaces[0].health_check_hosts, ["1.1.1.1"]);
+        assert_eq!(config.health_check_interval_seconds, 15);
+        assert_eq!(config.health_check_timeout_seconds, 12);
+        assert_eq!(config.health_check_ping_count, 5);
+    }
+
+    #[test]
+    fn loads_multiple_health_check_hosts() {
+        let config: Config = toml::from_str(
+            r#"
+default_interface = "wg0"
+ipv4_subnet = "198.18.0.0/15"
+ipv6_subnet = "fd32:bfcc:fba0:1337::/64"
+health_check_interval_seconds = 30
+health_check_timeout_seconds = 8
+health_check_ping_count = 3
+
+[[interfaces]]
+name = "wg0"
+fwmark = 1
+table_id = 100
+health_check_hosts = ["1.1.1.1", "2606:4700:4700::1111"]
+
+[upstream_resolver]
+type = "Quad9Https"
+"#,
+        )
+        .unwrap();
+
+        assert_eq!(
+            config.interfaces[0].health_check_hosts,
+            ["1.1.1.1", "2606:4700:4700::1111"]
+        );
+        assert_eq!(config.health_check_interval_seconds, 30);
+        assert_eq!(config.health_check_timeout_seconds, 8);
+        assert_eq!(config.health_check_ping_count, 3);
     }
 }

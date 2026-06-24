@@ -21,6 +21,10 @@ export interface InterfaceConfig {
   tcp_mss_clamp: number | null;
   ipv4_snat: string | null;
   ipv6_snat: string | null;
+  health_check_enabled: boolean;
+  health_check_hosts: string[];
+  health_check_latency_threshold_ms: number;
+  health_check_packet_loss_threshold_percent: number;
 }
 
 export interface Config {
@@ -30,6 +34,9 @@ export interface Config {
   ipv6_subnet: string;
   upstream_resolver: UpstreamResolverConfig;
   export_enabled: boolean;
+  health_check_interval_seconds: number;
+  health_check_timeout_seconds: number;
+  health_check_ping_count: number;
 }
 
 export interface PatchConfig {
@@ -39,6 +46,9 @@ export interface PatchConfig {
   ipv6_subnet?: string;
   upstream_resolver?: UpstreamResolverConfig;
   export_enabled?: boolean;
+  health_check_interval_seconds?: number;
+  health_check_timeout_seconds?: number;
+  health_check_ping_count?: number;
 }
 
 export interface DomainRule {

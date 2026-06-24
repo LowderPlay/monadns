@@ -1,22 +1,24 @@
-use std::sync::Arc;
-use arc_swap::ArcSwap;
-use hickory_resolver::name_server::TokioConnectionProvider;
-use hickory_resolver::TokioResolver;
-use ipnet::IpNet;
 use crate::config::{Config, PatchConfig};
 use crate::domain_controller::DomainController;
 use crate::domain_controller::sqlite::SqliteController;
 use crate::fake_ip::IpManager;
 use crate::handler::{FakeIpHandler, HandlerState};
-use crate::route_controller::nftables::NetworkManager;
-use log::{error, info};
+use crate::health_check::{self, HealthCheckSettings};
 use crate::route_controller::RouteController;
+use crate::route_controller::nftables::NetworkManager;
+use arc_swap::ArcSwap;
+use hickory_resolver::TokioResolver;
+use hickory_resolver::name_server::TokioConnectionProvider;
+use ipnet::IpNet;
+use log::{error, info};
+use std::sync::Arc;
 use tokio::sync::Mutex;
 
 pub struct App {
     handler: FakeIpHandler,
     config: ArcSwap<Config>,
     controller: Arc<SqliteController>,
+    health_check_tasks: std::sync::Mutex<Vec<tokio::task::JoinHandle<()>>>,
 }
 
 impl App {
@@ -26,14 +28,37 @@ impl App {
         let state = Self::create_state(&config, controller.clone()).await?;
         let handler = FakeIpHandler::new(state);
 
-        let app = Self { 
+        let app = Self {
             handler,
             config: ArcSwap::from(Arc::new(config)),
             controller,
+            health_check_tasks: std::sync::Mutex::new(Vec::new()),
         };
         app.start_metrics_worker();
         app.start_subnet_sync_worker();
+        app.restart_health_checks();
         Ok(app)
+    }
+
+    fn restart_health_checks(&self) {
+        let mut tasks = self.health_check_tasks.lock().unwrap();
+        for task in tasks.drain(..) {
+            task.abort();
+        }
+
+        let config = self.config.load();
+        let settings = HealthCheckSettings {
+            interval_seconds: config.health_check_interval_seconds.max(1),
+            timeout_seconds: config.health_check_timeout_seconds.max(1),
+            ping_count: config.health_check_ping_count.max(1),
+        };
+        tasks.extend(config.interfaces.iter().flat_map(|interface| {
+            interface.health_check_hosts.iter().cloned().map({
+                let interface = interface.clone();
+                move |host| health_check::spawn(interface.clone(), host, settings)
+            })
+        }));
+        info!("started {} interface health check workers", tasks.len());
     }
 
     fn start_metrics_worker(&self) {
@@ -70,14 +95,19 @@ impl App {
                     Ok(subnets) => {
                         let mut sync_list = Vec::new();
                         for (subnet, interface, priority) in subnets {
-                             let iface = state.config.resolve_interface(interface.as_deref());
-                             sync_list.push((subnet, iface.fwmark, priority));
+                            let iface = state.config.resolve_interface(interface.as_deref());
+                            sync_list.push((subnet, iface.fwmark, priority));
                         }
 
                         let mut last = last_synced.lock().await;
                         if sync_list != *last {
-                            info!("Subnets changed, syncing to nftables ({} entries)", sync_list.len());
-                            if let Err(e) = state.route_controller.sync_subnets(sync_list.clone()).await {
+                            info!(
+                                "Subnets changed, syncing to nftables ({} entries)",
+                                sync_list.len()
+                            );
+                            if let Err(e) =
+                                state.route_controller.sync_subnets(sync_list.clone()).await
+                            {
                                 error!("Failed to sync subnets to nftables: {}", e);
                             } else {
                                 *last = sync_list;
@@ -92,7 +122,6 @@ impl App {
     }
 
     pub fn handler(&self) -> FakeIpHandler {
-
         self.handler.clone()
     }
 
@@ -104,7 +133,10 @@ impl App {
         self.controller.clone()
     }
 
-    async fn create_state(config: &Config, controller: Arc<SqliteController>) -> anyhow::Result<HandlerState> {
+    async fn create_state(
+        config: &Config,
+        controller: Arc<SqliteController>,
+    ) -> anyhow::Result<HandlerState> {
         let route_controller = NetworkManager::new(config.interfaces.clone());
         route_controller.init().await?;
 
@@ -124,12 +156,13 @@ impl App {
         }
 
         let (resolver_config, resolver_opts) = config.upstream_resolver.to_resolver_parts();
-        let upstream = TokioResolver::builder_with_config(resolver_config, TokioConnectionProvider::default())
-            .with_options(resolver_opts)
-            .build();
+        let upstream =
+            TokioResolver::builder_with_config(resolver_config, TokioConnectionProvider::default())
+                .with_options(resolver_opts)
+                .build();
 
         let route_controller_arc: Arc<dyn RouteController> = Arc::new(route_controller);
-        
+
         let state = HandlerState {
             config: Arc::new(config.clone()),
             v4: IpManager::new(route_controller_arc.clone(), IpNet::V4(config.ipv4_subnet)),
@@ -149,6 +182,7 @@ impl App {
         let new_state = Self::create_state(&new_config, self.controller.clone()).await?;
         self.handler.state.swap(Arc::new(new_state));
         self.config.store(Arc::new(new_config));
+        self.restart_health_checks();
 
         Ok(())
     }

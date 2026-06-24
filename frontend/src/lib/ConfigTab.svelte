@@ -1,113 +1,164 @@
 <script lang="ts">
-  import { onMount } from 'svelte';
-  import { api, type Config, type UpstreamResolverConfig, type ResolverProtocol } from './api';
-  import { toast } from './toast_state.svelte';
-  import Trash from "../assets/Trash.svelte";
-  import File from "../assets/File.svelte";
+import { onMount } from "svelte";
+import File from "../assets/File.svelte";
+import Trash from "../assets/Trash.svelte";
+import {
+	api,
+	type Config,
+	type ResolverProtocol,
+	type UpstreamResolverConfig,
+} from "./api";
+import { toast } from "./toast_state.svelte";
 
-  let config = $state<Config | null>(null);
-  let saving = $state(false);
+let config = $state<Config | null>(null);
+let saving = $state(false);
 
-  onMount(async () => {
-    try {
-      config = await api.getConfig();
-    } catch (e: any) {
-      toast.error('Failed to load config: ' + e.message);
-    }
-  });
+onMount(async () => {
+	try {
+		config = await api.getConfig();
+	} catch (e: any) {
+		toast.error("Failed to load config: " + e.message);
+	}
+});
 
-  async function save() {
-    if (!config) return;
+async function save() {
+	if (!config) return;
 
-    for (const iface of config.interfaces) {
-      if (iface.ipv4_snat?.trim() === "") {
-        iface.ipv4_snat = null;
-      }
-      if (iface.ipv6_snat?.trim() === "") {
-        iface.ipv6_snat = null;
-      }
-    }
+	for (const iface of config.interfaces) {
+		if (iface.ipv4_snat?.trim() === "") {
+			iface.ipv4_snat = null;
+		}
+		if (iface.ipv6_snat?.trim() === "") {
+			iface.ipv6_snat = null;
+		}
+		iface.health_check_hosts = iface.health_check_hosts
+			.map((host) => host.trim())
+			.filter(Boolean);
+		if (iface.health_check_enabled && iface.health_check_hosts.length === 0) {
+			toast.error(
+				`At least one health check host is required for ${iface.name}`,
+			);
+			return;
+		}
+	}
 
-    if (config.upstream_resolver.type === 'Custom') {
-      if (config.upstream_resolver.nameservers.length === 0) {
-        toast.error('At least one nameserver is required for Custom configuration');
-        return;
-      }
-      for (const ns of config.upstream_resolver.nameservers) {
-        if (!ns.addr) {
-          toast.error('Nameserver address cannot be empty');
-          return;
-        }
-      }
-    }
+	if (config.upstream_resolver.type === "Custom") {
+		if (config.upstream_resolver.nameservers.length === 0) {
+			toast.error(
+				"At least one nameserver is required for Custom configuration",
+			);
+			return;
+		}
+		for (const ns of config.upstream_resolver.nameservers) {
+			if (!ns.addr) {
+				toast.error("Nameserver address cannot be empty");
+				return;
+			}
+		}
+	}
 
-    saving = true;
-    try {
-      await api.patchConfig(config);
-      toast.success('Configuration saved successfully');
-    } catch (e: any) {
-      toast.error('Failed to save config: ' + e.message);
-    } finally {
-      saving = false;
-    }
-  }
+	saving = true;
+	try {
+		await api.patchConfig(config);
+		toast.success("Configuration saved successfully");
+	} catch (e: any) {
+		toast.error(`Failed to save config: ${e.message}`);
+	} finally {
+		saving = false;
+	}
+}
 
-  const resolverPresets: Record<UpstreamResolverConfig['type'], string> = {
-    'Quad9Https': 'Quad9 DoH',
-    'CloudflareHttps': 'Cloudflare DoH',
-    'GoogleHttps': 'Google DoH',
-    'Custom': 'Custom'
-  };
-  const protocols: ResolverProtocol[] = ['Plain', 'Tls', 'Https'];
+const resolverPresets: Record<UpstreamResolverConfig["type"], string> = {
+	Quad9Https: "Quad9 DoH",
+	CloudflareHttps: "Cloudflare DoH",
+	GoogleHttps: "Google DoH",
+	Custom: "Custom",
+};
+const protocols: ResolverProtocol[] = ["Plain", "Tls", "Https"];
 
-  function addNameserver() {
-    if (config && config.upstream_resolver.type === 'Custom') {
-      config.upstream_resolver.nameservers = [
-        ...config.upstream_resolver.nameservers,
-        { addr: '', protocol: 'Plain', tls_dns_name: null }
-      ];
-    }
-  }
+function addNameserver() {
+	if (config && config.upstream_resolver.type === "Custom") {
+		config.upstream_resolver.nameservers = [
+			...config.upstream_resolver.nameservers,
+			{ addr: "", protocol: "Plain", tls_dns_name: null },
+		];
+	}
+}
 
-  function removeNameserver(index: number) {
-    if (config && config.upstream_resolver.type === 'Custom') {
-      config.upstream_resolver.nameservers = config.upstream_resolver.nameservers.filter((_, i) => i !== index);
-    }
-  }
+function removeNameserver(index: number) {
+	if (config && config.upstream_resolver.type === "Custom") {
+		config.upstream_resolver.nameservers =
+			config.upstream_resolver.nameservers.filter((_, i) => i !== index);
+	}
+}
 
-  function addInterface() {
-    if (config) {
-      const nextFwmark = Math.max(0, ...config.interfaces.map(i => i.fwmark)) + 1;
-      const nextTable = Math.max(0, ...config.interfaces.map(i => i.table_id)) + 1;
-      config.interfaces = [
-        ...config.interfaces,
-        { name: 'new0', fwmark: nextFwmark, table_id: nextTable, tcp_mss_clamp: 1280, ipv4_snat: null, ipv6_snat: null }
-      ];
-    }
-  }
+function addInterface() {
+	if (config) {
+		const nextFwmark =
+			Math.max(0, ...config.interfaces.map((i) => i.fwmark)) + 1;
+		const nextTable =
+			Math.max(0, ...config.interfaces.map((i) => i.table_id)) + 1;
+		config.interfaces = [
+			...config.interfaces,
+			{
+				name: "new0",
+				fwmark: nextFwmark,
+				table_id: nextTable,
+				tcp_mss_clamp: 1280,
+				ipv4_snat: null,
+				ipv6_snat: null,
+				health_check_enabled: true,
+				health_check_hosts: ["1.1.1.1", "2606:4700:4700::1111"],
+				health_check_latency_threshold_ms: 500,
+				health_check_packet_loss_threshold_percent: 50,
+			},
+		];
+	}
+}
 
-  function removeInterface(index: number) {
-    if (config && config.interfaces.length > 1) {
-      const ifaceName = config.interfaces[index].name;
-      config.interfaces = config.interfaces.filter((_, i) => i !== index);
-      if (config.default_interface === ifaceName) {
-        config.default_interface = config.interfaces[0].name;
-      }
-    } else {
-      toast.error('At least one interface is required');
-    }
-  }
+function removeInterface(index: number) {
+	if (config && config.interfaces.length > 1) {
+		const ifaceName = config.interfaces[index].name;
+		config.interfaces = config.interfaces.filter((_, i) => i !== index);
+		if (config.default_interface === ifaceName) {
+			config.default_interface = config.interfaces[0].name;
+		}
+	} else {
+		toast.error("At least one interface is required");
+	}
+}
 
-  function handleResolverChange(e: Event) {
-    const type = (e.target as HTMLSelectElement).value as UpstreamResolverConfig['type'];
-    if (config) {
-      if (type === 'Custom') {
-        config.upstream_resolver = { type: 'Custom', nameservers: [{ addr: '', protocol: 'Plain', tls_dns_name: null }] };
-      } else {
-        config.upstream_resolver = { type } as UpstreamResolverConfig;
-      }
-    }
-  }
+function addHealthCheckHost(interfaceIndex: number) {
+	if (config) {
+		config.interfaces[interfaceIndex].health_check_hosts = [
+			...config.interfaces[interfaceIndex].health_check_hosts,
+			"",
+		];
+	}
+}
+
+function removeHealthCheckHost(interfaceIndex: number, hostIndex: number) {
+	if (config) {
+		config.interfaces[interfaceIndex].health_check_hosts = config.interfaces[
+			interfaceIndex
+		].health_check_hosts.filter((_, index) => index !== hostIndex);
+	}
+}
+
+function handleResolverChange(e: Event) {
+	const type = (e.target as HTMLSelectElement)
+		.value as UpstreamResolverConfig["type"];
+	if (config) {
+		if (type === "Custom") {
+			config.upstream_resolver = {
+				type: "Custom",
+				nameservers: [{ addr: "", protocol: "Plain", tls_dns_name: null }],
+			};
+		} else {
+			config.upstream_resolver = { type } as UpstreamResolverConfig;
+		}
+	}
+}
 </script>
 
 <div class="space-y-6">
@@ -216,6 +267,24 @@
     {/if}
 
     <h2 class="text-xl font-bold border-b border-zinc-800 pb-2 mt-8">Interfaces</h2>
+
+    <div class="grid grid-cols-1 md:grid-cols-3 gap-6 mt-4">
+      <div class="flex flex-col gap-1">
+        <label for="health-interval" class="text-xs font-bold text-zinc-400 uppercase">Health Check Interval (seconds)</label>
+        <p class="text-xs text-zinc-500 mb-1">Time between checks for every interface and host.</p>
+        <input id="health-interval" type="number" min="1" bind:value={config.health_check_interval_seconds} class="bg-zinc-900 border border-zinc-800 p-2 text-sm focus:outline-none focus:border-zinc-600" />
+      </div>
+      <div class="flex flex-col gap-1">
+        <label for="health-timeout" class="text-xs font-bold text-zinc-400 uppercase">Health Check Timeout (seconds)</label>
+        <p class="text-xs text-zinc-500 mb-1">Maximum duration allowed for one ping batch.</p>
+        <input id="health-timeout" type="number" min="1" bind:value={config.health_check_timeout_seconds} class="bg-zinc-900 border border-zinc-800 p-2 text-sm focus:outline-none focus:border-zinc-600" />
+      </div>
+      <div class="flex flex-col gap-1">
+        <label for="health-ping-count" class="text-xs font-bold text-zinc-400 uppercase">Ping Count</label>
+        <p class="text-xs text-zinc-500 mb-1">ICMP echo requests sent to each host per check.</p>
+        <input id="health-ping-count" type="number" min="1" bind:value={config.health_check_ping_count} class="bg-zinc-900 border border-zinc-800 p-2 text-sm focus:outline-none focus:border-zinc-600" />
+      </div>
+    </div>
     
     <div class="flex flex-col gap-4 mt-4">
       <div class="flex flex-col gap-1 max-w-md">
@@ -299,6 +368,85 @@
                 <label for="iface-snat6-{i}" class="text-xs font-bold text-zinc-400 uppercase">IPv6 SNAT</label>
                 <p class="text-xs text-zinc-500 mb-1">Optional Source NAT address for outgoing IPv6 traffic. Masquerading will be used if not set.</p>
                 <input id="iface-snat6-{i}" bind:value={iface.ipv6_snat} class="bg-zinc-900 border border-zinc-800 p-2 text-sm focus:outline-none focus:border-zinc-600" placeholder="Masquerade" />
+              </div>
+
+              <!-- Health Check -->
+              <div class="flex items-center gap-3 h-fit">
+                <input
+                  id="iface-health-enabled-{i}"
+                  type="checkbox"
+                  bind:checked={iface.health_check_enabled}
+                  class="w-4 h-4 border-zinc-700 bg-zinc-950 accent-white cursor-pointer"
+                />
+                <div>
+                  <label for="iface-health-enabled-{i}" class="text-xs font-bold text-zinc-400 uppercase">Health Check</label>
+                  <p class="text-xs text-zinc-500">Periodically ping a host through this interface.</p>
+                </div>
+              </div>
+
+              <div class="flex flex-col gap-2 lg:col-span-2">
+                <div class="flex items-center justify-between">
+                  <div>
+                    <span class="text-xs font-bold text-zinc-400 uppercase">Health Check Hosts</span>
+                    <p class="text-xs text-zinc-500">IPv4/IPv6 addresses or hostnames to ping through this interface.</p>
+                  </div>
+                  <button
+                    type="button"
+                    disabled={!iface.health_check_enabled}
+                    onclick={() => addHealthCheckHost(i)}
+                    class="text-xs font-bold border border-zinc-700 px-3 py-1 hover:bg-zinc-800 disabled:opacity-40"
+                  >
+                    Add Host
+                  </button>
+                </div>
+                {#each iface.health_check_hosts as _, hostIndex}
+                  <div class="flex gap-2">
+                    <input
+                      aria-label="Health check host"
+                      disabled={!iface.health_check_enabled}
+                      bind:value={iface.health_check_hosts[hostIndex]}
+                      class="w-full bg-zinc-900 border border-zinc-800 p-2 text-sm focus:outline-none focus:border-zinc-600 disabled:opacity-40"
+                      placeholder={hostIndex === 0 ? "1.1.1.1" : "2606:4700:4700::1111"}
+                    />
+                    <button
+                      type="button"
+                      disabled={!iface.health_check_enabled}
+                      onclick={() => removeHealthCheckHost(i, hostIndex)}
+                      class="text-red-500 hover:text-red-400 p-2 disabled:opacity-40"
+                    >
+                      <Trash />
+                    </button>
+                  </div>
+                {/each}
+              </div>
+
+              <div class="flex flex-col gap-1">
+                <label for="iface-health-latency-{i}" class="text-xs font-bold text-zinc-400 uppercase">Maximum Latency (ms)</label>
+                <p class="text-xs text-zinc-500 mb-1">Average latency above this value marks the interface unhealthy.</p>
+                <input
+                  id="iface-health-latency-{i}"
+                  type="number"
+                  min="0"
+                  step="1"
+                  disabled={!iface.health_check_enabled}
+                  bind:value={iface.health_check_latency_threshold_ms}
+                  class="bg-zinc-900 border border-zinc-800 p-2 text-sm focus:outline-none focus:border-zinc-600 disabled:opacity-40"
+                />
+              </div>
+
+              <div class="flex flex-col gap-1">
+                <label for="iface-health-loss-{i}" class="text-xs font-bold text-zinc-400 uppercase">Maximum Packet Loss (%)</label>
+                <p class="text-xs text-zinc-500 mb-1">Packet loss above this percentage marks the interface unhealthy.</p>
+                <input
+                  id="iface-health-loss-{i}"
+                  type="number"
+                  min="0"
+                  max="100"
+                  step="1"
+                  disabled={!iface.health_check_enabled}
+                  bind:value={iface.health_check_packet_loss_threshold_percent}
+                  class="bg-zinc-900 border border-zinc-800 p-2 text-sm focus:outline-none focus:border-zinc-600 disabled:opacity-40"
+                />
               </div>
             </div>
           </div>

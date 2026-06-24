@@ -7,7 +7,7 @@ RUN corepack enable && corepack prepare pnpm@latest --activate
 
 # Copy frontend source
 # We copy the entire frontend folder but we need to ensure pnpm-lock.yaml is there
-COPY frontend/package.json frontend/pnpm-lock.yaml ./
+COPY frontend/package.json frontend/pnpm-lock.yaml frontend/pnpm-workspace.yaml ./
 RUN pnpm install --frozen-lockfile
 
 COPY frontend/ ./
@@ -51,6 +51,7 @@ WORKDIR /app
 # Install runtime dependencies
 RUN apt-get update && apt-get install -y \
     nftables \
+    iputils-ping \
     ca-certificates \
     sqlite3 \
     && rm -rf /var/lib/apt/lists/*
