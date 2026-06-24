@@ -344,6 +344,13 @@ impl NetworkManager {
             table: self.nft_table_name.clone().into(),
             chain: chain.into(),
             expr: vec![
+                Statement::Match(Match {
+                    left: Expression::Named(NamedExpression::Meta(Meta {
+                        key: MetaKey::Mark,
+                    })),
+                    right: Expression::Number(0),
+                    op: Operator::EQ,
+                }),
                 Self::dest_match_statement(protocol, map_name),
                 Statement::Counter(stmt::Counter::Named(counter_name.into())),
                 Statement::Mangle(Mangle {
@@ -652,4 +659,3 @@ impl RouteController for NetworkManager {
         Ok(())
     }
 }
-
