@@ -270,17 +270,17 @@ function handleResolverChange(e: Event) {
 
     <div class="grid grid-cols-1 md:grid-cols-3 gap-6 mt-4">
       <div class="flex flex-col gap-1">
-        <label for="health-interval" class="text-xs font-bold text-zinc-400 uppercase">Health Check Interval (seconds)</label>
+        <label for="health-interval" class="text-sm font-bold text-zinc-300">Health Check Interval (seconds)</label>
         <p class="text-xs text-zinc-500 mb-1">Time between checks for every interface and host.</p>
         <input id="health-interval" type="number" min="1" bind:value={config.health_check_interval_seconds} class="bg-zinc-900 border border-zinc-800 p-2 text-sm focus:outline-none focus:border-zinc-600" />
       </div>
       <div class="flex flex-col gap-1">
-        <label for="health-timeout" class="text-xs font-bold text-zinc-400 uppercase">Health Check Timeout (seconds)</label>
+        <label for="health-timeout" class="text-sm font-bold text-zinc-300">Health Check Timeout (seconds)</label>
         <p class="text-xs text-zinc-500 mb-1">Maximum duration allowed for one ping batch.</p>
         <input id="health-timeout" type="number" min="1" bind:value={config.health_check_timeout_seconds} class="bg-zinc-900 border border-zinc-800 p-2 text-sm focus:outline-none focus:border-zinc-600" />
       </div>
       <div class="flex flex-col gap-1">
-        <label for="health-ping-count" class="text-xs font-bold text-zinc-400 uppercase">Ping Count</label>
+        <label for="health-ping-count" class="text-sm font-bold text-zinc-300">Ping Count</label>
         <p class="text-xs text-zinc-500 mb-1">ICMP echo requests sent to each host per check.</p>
         <input id="health-ping-count" type="number" min="1" bind:value={config.health_check_ping_count} class="bg-zinc-900 border border-zinc-800 p-2 text-sm focus:outline-none focus:border-zinc-600" />
       </div>
