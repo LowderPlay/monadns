@@ -52,8 +52,8 @@ impl Default for InterfaceConfig {
             name: "wg0".to_string(),
             fwmark: 1,
             table_id: 100,
-            tcp_mss_clamp: Some(1280),
-            ipv4_snat: Some(IpAddr::V4(Ipv4Addr::new(10, 10, 10, 4))),
+            tcp_mss_clamp: None,
+            ipv4_snat: None,
             ipv6_snat: None,
             health_check_enabled: true,
             health_check_hosts: vec!["1.1.1.1".to_string(), "2606:4700:4700::1111".to_string()],
@@ -94,7 +94,11 @@ pub struct Config {
 impl Default for Config {
     fn default() -> Self {
         Self {
-            interfaces: vec![InterfaceConfig::default()],
+            interfaces: vec![InterfaceConfig {
+                tcp_mss_clamp: Some(1280),
+                ipv4_snat: Some(IpAddr::V4(Ipv4Addr::new(10, 10, 10, 4))),
+                ..InterfaceConfig::default()
+            }],
             default_interface: "wg0".to_string(),
             ipv4_subnet: Ipv4Net::from_str("198.18.0.0/15").unwrap(),
             ipv6_subnet: Ipv6Net::from_str("fd32:bfcc:fba0:1337::/64").unwrap(),
@@ -408,5 +412,20 @@ type = "Quad9Https"
         assert_eq!(config.health_check_interval_seconds, 30);
         assert_eq!(config.health_check_timeout_seconds, 8);
         assert_eq!(config.health_check_ping_count, 3);
+    }
+
+    #[test]
+    fn preserves_empty_optional_interface_fields_after_toml_round_trip() {
+        let mut config = Config::default();
+        config.interfaces[0].tcp_mss_clamp = None;
+        config.interfaces[0].ipv4_snat = None;
+        config.interfaces[0].ipv6_snat = None;
+
+        let serialized = toml::to_string_pretty(&config).unwrap();
+        let loaded: Config = toml::from_str(&serialized).unwrap();
+
+        assert_eq!(loaded.interfaces[0].tcp_mss_clamp, None);
+        assert_eq!(loaded.interfaces[0].ipv4_snat, None);
+        assert_eq!(loaded.interfaces[0].ipv6_snat, None);
     }
 }

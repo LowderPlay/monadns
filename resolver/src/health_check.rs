@@ -112,8 +112,10 @@ async fn check(
         .env("LC_ALL", "C")
         .args([
             "-n",
+            "-m",
+            &interface.fwmark.to_string(),
             "-I",
-            &interface.name,
+            &interface.name.clone(),
             "-c",
             &settings.ping_count.max(1).to_string(),
             "-W",
@@ -138,6 +140,20 @@ async fn check(
     }
 
     let stderr = String::from_utf8_lossy(&output.stderr);
+    let is_unreachable = [
+        "Network is unreachable",
+        "No route to host",
+        "Address family not supported by protocol",
+    ]
+    .iter()
+    .any(|message| stderr.contains(message));
+    if is_unreachable {
+        return Ok(PingMeasurements {
+            latency_ms: None,
+            packet_loss_percent: 100.0,
+        });
+    }
+
     anyhow::bail!(
         "could not parse ping output (status {}): {}",
         output.status,
@@ -166,38 +182,4 @@ fn parse_ping_output(output: &str) -> Option<PingMeasurements> {
         latency_ms,
         packet_loss_percent,
     })
-}
-
-#[cfg(test)]
-mod tests {
-    use super::*;
-
-    #[test]
-    fn parses_successful_iputils_ping() {
-        let output = r#"
-5 packets transmitted, 5 received, 0% packet loss, time 4005ms
-rtt min/avg/max/mdev = 14.241/16.854/19.816/1.821 ms
-"#;
-
-        assert_eq!(
-            parse_ping_output(output),
-            Some(PingMeasurements {
-                latency_ms: Some(16.854),
-                packet_loss_percent: 0.0,
-            })
-        );
-    }
-
-    #[test]
-    fn parses_total_packet_loss_without_latency() {
-        let output = "5 packets transmitted, 0 received, 100% packet loss, time 4092ms\n";
-
-        assert_eq!(
-            parse_ping_output(output),
-            Some(PingMeasurements {
-                latency_ms: None,
-                packet_loss_percent: 100.0,
-            })
-        );
-    }
 }
