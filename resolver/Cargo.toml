@@ -21,7 +21,7 @@ sqlx = { version = "0.8", features = ["sqlite", "runtime-tokio", "macros", "chro
 chrono = { version = "0.4.39", features = ["serde"] }
 reqwest = { version = "0.13.2" }
 nftables = "0.6.3"
-rtnetlink = "0.20.0"
+rtnetlink = "0.21.0"
 futures = "0.3.32"
 serde = { version = "1.0.219", features = ["derive"] }
 serde_json = "1.0.149"
