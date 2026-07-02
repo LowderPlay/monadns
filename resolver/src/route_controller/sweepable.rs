@@ -1,5 +1,5 @@
-use std::collections::{BTreeMap, BTreeSet, HashMap};
 use ipnet::{IpNet, Ipv4Net, Ipv6Net};
+use std::collections::{BTreeMap, BTreeSet, HashMap};
 
 #[derive(Eq, PartialEq, PartialOrd, Ord, Clone, Copy)]
 enum Boundary<T: Ord> {
@@ -12,7 +12,9 @@ where
     T: SweepableIp,
     T::Net: Copy + Ord + Send + Sync,
 {
-    if subnets.is_empty() { return vec![]; }
+    if subnets.is_empty() {
+        return vec![];
+    }
 
     #[derive(Eq, PartialEq, PartialOrd, Ord)]
     struct Event<T: Ord> {
@@ -30,10 +32,26 @@ where
         let e = T::broadcast(net);
 
         let start = Boundary::Value(s);
-        let end = if e == T::max_val() { Boundary::Infinity } else { Boundary::Value(T::add_one(e)) };
+        let end = if e == T::max_val() {
+            Boundary::Infinity
+        } else {
+            Boundary::Value(T::add_one(e))
+        };
 
-        events.push(Event { ip: start, is_start: true, priority, prefix_len: T::prefix_len(net), mark });
-        events.push(Event { ip: end, is_start: false, priority, prefix_len: T::prefix_len(net), mark });
+        events.push(Event {
+            ip: start,
+            is_start: true,
+            priority,
+            prefix_len: T::prefix_len(net),
+            mark,
+        });
+        events.push(Event {
+            ip: end,
+            is_start: false,
+            priority,
+            prefix_len: T::prefix_len(net),
+            mark,
+        });
         points.insert(start);
         points.insert(end);
     }
@@ -47,7 +65,7 @@ where
 
     for i in 0..sorted_points.len() - 1 {
         let start = sorted_points[i];
-        let next = sorted_points[i+1];
+        let next = sorted_points[i + 1];
 
         while event_idx < events.len() && events[event_idx].ip == start {
             let e = &events[event_idx];
@@ -57,15 +75,23 @@ where
             } else {
                 if let Some(c) = active.get_mut(&key) {
                     *c -= 1;
-                    if *c == 0 { active.remove(&key); }
+                    if *c == 0 {
+                        active.remove(&key);
+                    }
                 }
             }
             event_idx += 1;
         }
 
         if let Some((_, _, mark)) = active.keys().last() {
-            let start_val = match start { Boundary::Value(v) => v, Boundary::Infinity => unreachable!() };
-            let end_val = match next { Boundary::Value(v) => T::sub_one(v), Boundary::Infinity => T::max_val() };
+            let start_val = match start {
+                Boundary::Value(v) => v,
+                Boundary::Infinity => unreachable!(),
+            };
+            let end_val = match next {
+                Boundary::Value(v) => T::sub_one(v),
+                Boundary::Infinity => T::max_val(),
+            };
             result_intervals.push((start_val, end_val, *mark));
         }
     }
@@ -100,13 +126,27 @@ pub trait SweepableIp: Copy + Ord + Eq + Send + Sync + 'static {
 
 impl SweepableIp for u32 {
     type Net = Ipv4Net;
-    fn network(net: Self::Net) -> Self { net.network().into() }
-    fn broadcast(net: Self::Net) -> Self { net.broadcast().into() }
-    fn prefix_len(net: Self::Net) -> u8 { net.prefix_len() }
-    fn get_ipnet(net: Self::Net) -> IpNet { IpNet::V4(net) }
-    fn max_val() -> Self { u32::MAX }
-    fn add_one(v: Self) -> Self { v + 1 }
-    fn sub_one(v: Self) -> Self { v - 1 }
+    fn network(net: Self::Net) -> Self {
+        net.network().into()
+    }
+    fn broadcast(net: Self::Net) -> Self {
+        net.broadcast().into()
+    }
+    fn prefix_len(net: Self::Net) -> u8 {
+        net.prefix_len()
+    }
+    fn get_ipnet(net: Self::Net) -> IpNet {
+        IpNet::V4(net)
+    }
+    fn max_val() -> Self {
+        u32::MAX
+    }
+    fn add_one(v: Self) -> Self {
+        v + 1
+    }
+    fn sub_one(v: Self) -> Self {
+        v - 1
+    }
     fn range_to_cidrs(start: Self, end: Self) -> Vec<Self::Net> {
         let mut res = Vec::new();
         let mut s = start;
@@ -114,13 +154,21 @@ impl SweepableIp for u32 {
             let mut p = if s == 0 { 32 } else { s.trailing_zeros() };
             while p > 0 {
                 let size = 1u64 << p;
-                if size - 1 > (end as u64 - s as u64) { p -= 1; } else { break; }
+                if size - 1 > (end as u64 - s as u64) {
+                    p -= 1;
+                } else {
+                    break;
+                }
             }
             res.push(Ipv4Net::new(s.into(), (32 - p) as u8).unwrap());
             let size = 1u64 << p;
-            if size > (end as u64 - s as u64) { break; }
+            if size > (end as u64 - s as u64) {
+                break;
+            }
             s = s.wrapping_add(size as u32);
-            if s == 0 { break; }
+            if s == 0 {
+                break;
+            }
         }
         res
     }
@@ -128,13 +176,27 @@ impl SweepableIp for u32 {
 
 impl SweepableIp for u128 {
     type Net = Ipv6Net;
-    fn network(net: Self::Net) -> Self { net.network().into() }
-    fn broadcast(net: Self::Net) -> Self { net.broadcast().into() }
-    fn prefix_len(net: Self::Net) -> u8 { net.prefix_len() }
-    fn get_ipnet(net: Self::Net) -> IpNet { IpNet::V6(net) }
-    fn max_val() -> Self { u128::MAX }
-    fn add_one(v: Self) -> Self { v + 1 }
-    fn sub_one(v: Self) -> Self { v - 1 }
+    fn network(net: Self::Net) -> Self {
+        net.network().into()
+    }
+    fn broadcast(net: Self::Net) -> Self {
+        net.broadcast().into()
+    }
+    fn prefix_len(net: Self::Net) -> u8 {
+        net.prefix_len()
+    }
+    fn get_ipnet(net: Self::Net) -> IpNet {
+        IpNet::V6(net)
+    }
+    fn max_val() -> Self {
+        u128::MAX
+    }
+    fn add_one(v: Self) -> Self {
+        v + 1
+    }
+    fn sub_one(v: Self) -> Self {
+        v - 1
+    }
     fn range_to_cidrs(start: Self, end: Self) -> Vec<Self::Net> {
         let mut res = Vec::new();
         let mut s = start;
@@ -142,18 +204,31 @@ impl SweepableIp for u128 {
             let mut p = if s == 0 { 128 } else { s.trailing_zeros() };
             while p > 0 {
                 if p == 128 {
-                    if s == 0 && end == u128::MAX { break; }
-                    p = 127; continue;
+                    if s == 0 && end == u128::MAX {
+                        break;
+                    }
+                    p = 127;
+                    continue;
                 }
                 let size = 1u128 << p;
-                if size - 1 > (end - s) { p -= 1; } else { break; }
+                if size - 1 > (end - s) {
+                    p -= 1;
+                } else {
+                    break;
+                }
             }
             res.push(Ipv6Net::new(s.into(), (128 - p) as u8).unwrap());
-            if p == 128 { break; }
+            if p == 128 {
+                break;
+            }
             let size = 1u128 << p;
-            if size > (end - s) { break; }
+            if size > (end - s) {
+                break;
+            }
             s = s.wrapping_add(size);
-            if s == 0 { break; }
+            if s == 0 {
+                break;
+            }
         }
         res
     }

@@ -1,27 +1,27 @@
+use crate::domain_controller::{DomainController, Intercept, PolicyId};
+use crate::fake_ip::IpManager;
+use crate::route_controller::RouteController;
+use arc_swap::ArcSwap;
+use hickory_proto::ProtoErrorKind;
+use hickory_proto::op::{Header, ResponseCode};
+use hickory_proto::rr::rdata::svcb::{IpHint, SvcParamValue};
+use hickory_proto::rr::rdata::{A, AAAA, HTTPS, SVCB, TXT};
+use hickory_proto::rr::{Name, RData, Record};
+use hickory_resolver::TokioResolver;
+use hickory_server::authority::MessageResponseBuilder;
+use hickory_server::server::{Request, RequestHandler, ResponseHandler, ResponseInfo};
+use log::{debug, error};
 use std::net::IpAddr;
 use std::str::FromStr;
 use std::sync::Arc;
-use arc_swap::ArcSwap;
-use hickory_resolver::TokioResolver;
-use hickory_server::server::{Request, RequestHandler, ResponseHandler, ResponseInfo};
-use hickory_proto::op::{Header, ResponseCode};
-use hickory_server::authority::MessageResponseBuilder;
-use hickory_proto::ProtoErrorKind;
-use hickory_proto::rr::{Name, RData, Record};
-use hickory_proto::rr::rdata::{A, AAAA, HTTPS, SVCB, TXT};
-use hickory_proto::rr::rdata::svcb::{IpHint, SvcParamValue};
-use log::{debug, error};
-use crate::domain_controller::{DomainController, Intercept};
-use crate::fake_ip::IpManager;
-use crate::route_controller::RouteController;
 
 use crate::config::Config;
 
 pub struct HandlerState {
-    pub config: Arc<Config>,
+    pub config: Arc<ArcSwap<Config>>,
     pub v4: IpManager,
     pub v6: IpManager,
-    pub upstream: TokioResolver,
+    pub upstream: Arc<ArcSwap<TokioResolver>>,
     pub domain_controller: Arc<dyn DomainController>,
     pub route_controller: Arc<dyn RouteController>,
 }
@@ -38,36 +38,56 @@ impl FakeIpHandler {
         }
     }
 
-    async fn handle_svcb(&self, svcb: &SVCB, actual_interface_name: &str, fwmark: u32) -> anyhow::Result<SVCB> {
+    async fn handle_svcb(
+        &self,
+        svcb: &SVCB,
+        policy_id: PolicyId,
+        fwmark: u32,
+    ) -> anyhow::Result<SVCB> {
         let state = self.state.load();
         let mut params = vec![];
         for (k, v) in svcb.svc_params() {
-            params.push((k.clone(), match v {
-                SvcParamValue::Ipv4Hint(IpHint(a)) => {
-                    let mut ips = vec![];
-                    for ip in a {
-                        let IpAddr::V4(ipv4) = state.v4.get_or_assign_ip(&IpAddr::V4(ip.0), actual_interface_name, fwmark).await? else {
-                            unimplemented!()
-                        };
-                        ips.push(A(ipv4));
+            params.push((
+                k.clone(),
+                match v {
+                    SvcParamValue::Ipv4Hint(IpHint(a)) => {
+                        let mut ips = vec![];
+                        for ip in a {
+                            let IpAddr::V4(ipv4) = state
+                                .v4
+                                .get_or_assign_ip(&IpAddr::V4(ip.0), policy_id, fwmark)
+                                .await?
+                            else {
+                                unimplemented!()
+                            };
+                            ips.push(A(ipv4));
+                        }
+                        SvcParamValue::Ipv4Hint(IpHint(ips))
                     }
-                    SvcParamValue::Ipv4Hint(IpHint(ips))
-                }
-                SvcParamValue::Ipv6Hint(IpHint(aaaa)) => {
-                    let mut ips = vec![];
-                    for ip in aaaa {
-                        let IpAddr::V6(ipv6) = state.v6.get_or_assign_ip(&IpAddr::V6(ip.0), actual_interface_name, fwmark).await? else {
-                            unimplemented!()
-                        };
-                        ips.push(AAAA(ipv6));
+                    SvcParamValue::Ipv6Hint(IpHint(aaaa)) => {
+                        let mut ips = vec![];
+                        for ip in aaaa {
+                            let IpAddr::V6(ipv6) = state
+                                .v6
+                                .get_or_assign_ip(&IpAddr::V6(ip.0), policy_id, fwmark)
+                                .await?
+                            else {
+                                unimplemented!()
+                            };
+                            ips.push(AAAA(ipv6));
+                        }
+                        SvcParamValue::Ipv6Hint(IpHint(ips))
                     }
-                    SvcParamValue::Ipv6Hint(IpHint(ips))
-                }
-                v => v.clone(),
-            }));
+                    v => v.clone(),
+                },
+            ));
         }
 
-        Ok(SVCB::new(svcb.svc_priority(), svcb.target_name().clone(), params))
+        Ok(SVCB::new(
+            svcb.svc_priority(),
+            svcb.target_name().clone(),
+            params,
+        ))
     }
 }
 
@@ -89,57 +109,77 @@ impl RequestHandler for FakeIpHandler {
         let builder = MessageResponseBuilder::from_message_request(request);
         debug!("query: [{}] {}", query.query_type(), name);
 
-        let lookup = match state.upstream.lookup(&name, query.query_type()).await {
+        let upstream = state.upstream.load();
+        let lookup = match upstream.lookup(&name, query.query_type()).await {
             Ok(lookup) => lookup,
             Err(e) => {
                 let code = match e.kind() {
                     ProtoErrorKind::NoRecordsFound(hickory_proto::NoRecords {
-                                                       response_code: ResponseCode::NXDomain, ..
-                                                   }) => ResponseCode::NXDomain,
+                        response_code: ResponseCode::NXDomain,
+                        ..
+                    }) => ResponseCode::NXDomain,
                     ProtoErrorKind::NoRecordsFound(_) => ResponseCode::NoError,
-                    _ => ResponseCode::ServFail
+                    _ => ResponseCode::ServFail,
                 };
                 header.set_response_code(code);
 
                 metrics::counter!("dns_queries_total", "type" => query_type, "intercepted" => "false", "response_code" => code.to_string()).increment(1);
-                return response_handle.send_response(builder.build_no_records(header)).await.unwrap();
+                return response_handle
+                    .send_response(builder.build_no_records(header))
+                    .await
+                    .unwrap();
             }
         };
 
-        if let Some(Intercept { interface, reason }) = state.domain_controller.should_intercept(&name).await {
-            let iface_config = state.config.resolve_interface(Some(&interface));
-            
+        if let Some(Intercept {
+            interface,
+            policy_id,
+        }) = state.domain_controller.should_intercept(&name).await
+        {
+            let config = state.config.load();
+            let iface_config = config.resolve_interface(Some(&interface));
+
             let fwmark = iface_config.fwmark;
             let actual_interface_name = &iface_config.name;
 
             let mut records = lookup.records().to_vec();
             for r in &mut records {
                 let real_ip = match r.data() {
-                    RData::A(a) => state.v4.get_or_assign_ip(&IpAddr::V4(a.0), actual_interface_name, fwmark).await,
-                    RData::AAAA(aaaa) => state.v6.get_or_assign_ip(&IpAddr::V6(aaaa.0), actual_interface_name, fwmark).await,
+                    RData::A(a) => {
+                        state
+                            .v4
+                            .get_or_assign_ip(&IpAddr::V4(a.0), policy_id, fwmark)
+                            .await
+                    }
+                    RData::AAAA(aaaa) => {
+                        state
+                            .v6
+                            .get_or_assign_ip(&IpAddr::V6(aaaa.0), policy_id, fwmark)
+                            .await
+                    }
                     RData::HTTPS(HTTPS(svcb)) => {
-                        let svcb = self.handle_svcb(svcb, actual_interface_name, fwmark).await;
+                        let svcb = self.handle_svcb(svcb, policy_id, fwmark).await;
                         match svcb {
                             Ok(svcb) => {
                                 r.set_data(RData::HTTPS(HTTPS(svcb))).set_ttl(60);
                                 continue;
                             }
-                            Err(e) => Err(e)
+                            Err(e) => Err(e),
                         }
                     }
                     RData::SVCB(svcb) => {
-                        let svcb = self.handle_svcb(svcb, actual_interface_name, fwmark).await;
+                        let svcb = self.handle_svcb(svcb, policy_id, fwmark).await;
                         match svcb {
                             Ok(svcb) => {
                                 r.set_data(RData::SVCB(svcb)).set_ttl(60);
                                 continue;
                             }
-                            Err(e) => Err(e)
+                            Err(e) => Err(e),
                         }
                     }
-                    _ => continue
+                    _ => continue,
                 };
-                
+
                 match real_ip {
                     Ok(IpAddr::V4(v4)) => r.set_data(RData::A(A(v4))),
                     Ok(IpAddr::V6(v6)) => r.set_data(RData::AAAA(AAAA(v6))),
@@ -156,11 +196,13 @@ impl RequestHandler for FakeIpHandler {
                 Record::from_rdata(
                     Name::from_str("reason.monadns.").unwrap(),
                     60,
-                    RData::TXT(TXT::new(vec![reason.to_string()]))),
+                    RData::TXT(TXT::new(vec![policy_id.to_string()])),
+                ),
                 Record::from_rdata(
                     Name::from_str("interface.monadns.").unwrap(),
                     60,
-                    RData::TXT(TXT::new(vec![actual_interface_name.to_string()]))),
+                    RData::TXT(TXT::new(vec![actual_interface_name.to_string()])),
+                ),
             ];
 
             let response = builder.build(header, &records, [], [], &additionals);
@@ -169,7 +211,9 @@ impl RequestHandler for FakeIpHandler {
         }
 
         metrics::counter!("dns_queries_total", "type" => query_type, "intercepted" => "false", "response_code" => "No Error").increment(1);
-        response_handle.send_response(builder
-            .build(header, lookup.records(), [], [], [])).await.unwrap()
+        response_handle
+            .send_response(builder.build(header, lookup.records(), [], [], []))
+            .await
+            .unwrap()
     }
 }

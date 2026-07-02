@@ -1,28 +1,41 @@
-use std::sync::{Arc, LazyLock};
+use crate::app::App;
+use crate::config::{Config, PatchConfig, UpstreamResolverConfig};
+use crate::domain_controller::PolicyId;
+use crate::domain_controller::sqlite::{DomainList, DomainRule, GeoSource, IpList, IpRule};
 use axum::{
-    extract::{Path, State, Request},
-    Json,
-    routing::{get, post, delete},
-    Router,
+    Json, Router,
+    extract::{Path, Request, State},
+    http::StatusCode,
     middleware::{self, Next},
     response::{IntoResponse, Response},
-    http::StatusCode,
+    routing::{delete, get, post},
 };
 use axum_embed::ServeEmbed;
+use frontend::FrontendDist;
 use log::error;
 use serde::Serialize;
+use std::sync::{Arc, LazyLock};
 use utoipa::{OpenApi, ToSchema};
 use utoipa_axum::router::OpenApiRouter;
 use utoipa_swagger_ui::SwaggerUi;
-use frontend::FrontendDist;
-use crate::app::App;
-use crate::config::{Config, PatchConfig, UpstreamResolverConfig};
-use crate::domain_controller::sqlite::{DomainRule, DomainList, IpRule, IpList, GeoSource};
 
 #[derive(Serialize, ToSchema)]
 pub struct AvailableGeoOptions {
     pub geosite: Vec<String>,
     pub geoip: Vec<String>,
+}
+
+async fn set_policy_mark_for_interface(
+    app: &Arc<App>,
+    policy_id: PolicyId,
+    interface: Option<&str>,
+) -> Result<(), String> {
+    let fwmark = app.current_config().resolve_interface(interface).fwmark;
+    let route_controller = app.handler().state.load().route_controller.clone();
+    route_controller
+        .set_policy_mark(policy_id, fwmark)
+        .await
+        .map_err(|e| e.to_string())
 }
 
 #[derive(OpenApi)]
@@ -80,7 +93,7 @@ async fn auth_middleware(req: Request, next: Next) -> Response {
             return (StatusCode::UNAUTHORIZED, "Invalid API Key").into_response();
         }
     }
-    
+
     next.run(req).await
 }
 
@@ -130,9 +143,7 @@ pub fn create_router(app: Arc<App>) -> Router {
         (status = 200, description = "Current configuration", body = Config)
     )
 )]
-async fn get_config(
-    State(app): State<Arc<App>>,
-) -> Json<Config> {
+async fn get_config(State(app): State<Arc<App>>) -> Json<Config> {
     Json((*app.current_config()).clone())
 }
 
@@ -164,10 +175,10 @@ async fn patch_config(
         (status = 200, description = "List of domain rules", body = [DomainRule])
     )
 )]
-async fn list_domain_rules(
-    State(app): State<Arc<App>>,
-) -> Result<Json<Vec<DomainRule>>, String> {
-    app.controller().list_rules().await
+async fn list_domain_rules(State(app): State<Arc<App>>) -> Result<Json<Vec<DomainRule>>, String> {
+    app.controller()
+        .list_rules()
+        .await
         .map(Json)
         .map_err(|e| e.to_string())
 }
@@ -186,9 +197,18 @@ async fn add_domain_rule(
     State(app): State<Arc<App>>,
     Json(rule): Json<DomainRule>,
 ) -> Result<Json<String>, String> {
-    app.controller().add_rule(&rule.domain, rule.include_subdomains, rule.interface).await
-        .map(|_| Json("Domain rule added".to_string()))
-        .map_err(|e| e.to_string())
+    let rule_id = app
+        .controller()
+        .add_rule(&rule.domain, rule.include_subdomains, rule.interface.clone())
+        .await
+        .map_err(|e| e.to_string())?;
+    set_policy_mark_for_interface(
+        &app,
+        PolicyId::DomainRule(rule_id),
+        rule.interface.as_deref(),
+    )
+    .await?;
+    Ok(Json("Domain rule added".to_string()))
 }
 
 /// Remove a domain rule
@@ -207,7 +227,9 @@ async fn remove_domain_rule(
     State(app): State<Arc<App>>,
     Path(domain): Path<String>,
 ) -> Result<Json<String>, String> {
-    app.controller().remove_rule(&domain).await
+    app.controller()
+        .remove_rule(&domain)
+        .await
         .map(|_| Json("Domain rule removed".to_string()))
         .map_err(|e| e.to_string())
 }
@@ -220,10 +242,10 @@ async fn remove_domain_rule(
         (status = 200, description = "List of domain lists", body = [DomainList])
     )
 )]
-async fn list_domain_lists(
-    State(app): State<Arc<App>>,
-) -> Result<Json<Vec<DomainList>>, String> {
-    app.controller().list_domain_lists().await
+async fn list_domain_lists(State(app): State<Arc<App>>) -> Result<Json<Vec<DomainList>>, String> {
+    app.controller()
+        .list_domain_lists()
+        .await
         .map(Json)
         .map_err(|e| e.to_string())
 }
@@ -242,8 +264,14 @@ async fn add_domain_list(
     State(app): State<Arc<App>>,
     Json(list): Json<DomainList>,
 ) -> Result<Json<String>, String> {
-    let list_id = app.controller().add_domain_list(list).await
+    let interface = list.interface.clone();
+    let list_id = app
+        .controller()
+        .add_domain_list(list)
+        .await
         .map_err(|e| e.to_string())?;
+    set_policy_mark_for_interface(&app, PolicyId::DomainList(list_id), interface.as_deref())
+        .await?;
 
     let controller = app.controller();
     tokio::spawn(async move {
@@ -272,7 +300,9 @@ async fn remove_domain_list(
     State(app): State<Arc<App>>,
     Path(id): Path<i64>,
 ) -> Result<Json<String>, String> {
-    app.controller().remove_domain_list(id).await
+    app.controller()
+        .remove_domain_list(id)
+        .await
         .map(|_| Json("Domain list removed".to_string()))
         .map_err(|e| e.to_string())
 }
@@ -291,7 +321,9 @@ async fn reorder_domain_lists(
     State(app): State<Arc<App>>,
     Json(ids): Json<Vec<i64>>,
 ) -> Result<Json<String>, String> {
-    app.controller().reorder_domain_lists(ids).await
+    app.controller()
+        .reorder_domain_lists(ids)
+        .await
         .map(|_| Json("Domain lists reordered".to_string()))
         .map_err(|e| e.to_string())
 }
@@ -330,10 +362,10 @@ pub async fn sync_domain_list(
         (status = 200, description = "List of IP rules", body = [IpRule])
     )
 )]
-async fn list_ip_rules(
-    State(app): State<Arc<App>>,
-) -> Result<Json<Vec<IpRule>>, String> {
-    app.controller().list_ip_rules().await
+async fn list_ip_rules(State(app): State<Arc<App>>) -> Result<Json<Vec<IpRule>>, String> {
+    app.controller()
+        .list_ip_rules()
+        .await
         .map(Json)
         .map_err(|e| e.to_string())
 }
@@ -352,9 +384,14 @@ async fn add_ip_rule(
     State(app): State<Arc<App>>,
     Json(rule): Json<IpRule>,
 ) -> Result<Json<String>, String> {
-    app.controller().add_ip_rule(&rule.subnet, rule.interface).await
-        .map(|_| Json("IP rule added".to_string()))
-        .map_err(|e| e.to_string())
+    let rule_id = app
+        .controller()
+        .add_ip_rule(&rule.subnet, rule.interface.clone())
+        .await
+        .map_err(|e| e.to_string())?;
+    set_policy_mark_for_interface(&app, PolicyId::IpRule(rule_id), rule.interface.as_deref())
+        .await?;
+    Ok(Json("IP rule added".to_string()))
 }
 
 /// Remove an IP rule
@@ -373,7 +410,9 @@ async fn remove_ip_rule(
     State(app): State<Arc<App>>,
     Path(subnet): Path<String>,
 ) -> Result<Json<String>, String> {
-    app.controller().remove_ip_rule(&subnet).await
+    app.controller()
+        .remove_ip_rule(&subnet)
+        .await
         .map(|_| Json("IP rule removed".to_string()))
         .map_err(|e| e.to_string())
 }
@@ -386,10 +425,10 @@ async fn remove_ip_rule(
         (status = 200, description = "List of IP lists", body = [IpList])
     )
 )]
-async fn list_ip_lists(
-    State(app): State<Arc<App>>,
-) -> Result<Json<Vec<IpList>>, String> {
-    app.controller().list_ip_lists().await
+async fn list_ip_lists(State(app): State<Arc<App>>) -> Result<Json<Vec<IpList>>, String> {
+    app.controller()
+        .list_ip_lists()
+        .await
         .map(Json)
         .map_err(|e| e.to_string())
 }
@@ -408,8 +447,13 @@ async fn add_ip_list(
     State(app): State<Arc<App>>,
     Json(list): Json<IpList>,
 ) -> Result<Json<String>, String> {
-    let list_id = app.controller().add_ip_list(list).await
+    let interface = list.interface.clone();
+    let list_id = app
+        .controller()
+        .add_ip_list(list)
+        .await
         .map_err(|e| e.to_string())?;
+    set_policy_mark_for_interface(&app, PolicyId::IpList(list_id), interface.as_deref()).await?;
 
     let controller = app.controller();
     tokio::spawn(async move {
@@ -438,7 +482,9 @@ async fn remove_ip_list(
     State(app): State<Arc<App>>,
     Path(id): Path<i64>,
 ) -> Result<Json<String>, String> {
-    app.controller().remove_ip_list(id).await
+    app.controller()
+        .remove_ip_list(id)
+        .await
         .map(|_| Json("IP list removed".to_string()))
         .map_err(|e| e.to_string())
 }
@@ -457,7 +503,9 @@ async fn reorder_ip_lists(
     State(app): State<Arc<App>>,
     Json(ids): Json<Vec<i64>>,
 ) -> Result<Json<String>, String> {
-    app.controller().reorder_ip_lists(ids).await
+    app.controller()
+        .reorder_ip_lists(ids)
+        .await
         .map(|_| Json("IP lists reordered".to_string()))
         .map_err(|e| e.to_string())
 }
@@ -496,10 +544,10 @@ pub async fn sync_ip_list(
         (status = 200, description = "List of geo sources", body = [GeoSource])
     )
 )]
-async fn list_geo_sources(
-    State(app): State<Arc<App>>,
-) -> Result<Json<Vec<GeoSource>>, String> {
-    app.controller().list_geo_sources().await
+async fn list_geo_sources(State(app): State<Arc<App>>) -> Result<Json<Vec<GeoSource>>, String> {
+    app.controller()
+        .list_geo_sources()
+        .await
         .map(Json)
         .map_err(|e| e.to_string())
 }
@@ -518,7 +566,10 @@ async fn add_geo_source(
     State(app): State<Arc<App>>,
     Json(source): Json<GeoSource>,
 ) -> Result<Json<String>, String> {
-    let source_id = app.controller().add_geo_source(source).await
+    let source_id = app
+        .controller()
+        .add_geo_source(source)
+        .await
         .map_err(|e| e.to_string())?;
 
     let controller = app.controller();
@@ -547,7 +598,9 @@ async fn remove_geo_source(
     State(app): State<Arc<App>>,
     Path(id): Path<i64>,
 ) -> Result<Json<String>, String> {
-    app.controller().remove_geo_source(id).await
+    app.controller()
+        .remove_geo_source(id)
+        .await
         .map(|_| Json("Geo source removed".to_string()))
         .map_err(|e| e.to_string())
 }
@@ -586,12 +639,18 @@ pub async fn sync_geo_source(
         (status = 200, description = "Available geo categories", body = AvailableGeoOptions)
     )
 )]
-async fn get_geo_options(
-    State(app): State<Arc<App>>,
-) -> Result<Json<AvailableGeoOptions>, String> {
-    let geosite = app.controller().list_geosite_categories().await.map_err(|e| e.to_string())?;
-    let geoip = app.controller().list_geoip_categories().await.map_err(|e| e.to_string())?;
-    
+async fn get_geo_options(State(app): State<Arc<App>>) -> Result<Json<AvailableGeoOptions>, String> {
+    let geosite = app
+        .controller()
+        .list_geosite_categories()
+        .await
+        .map_err(|e| e.to_string())?;
+    let geoip = app
+        .controller()
+        .list_geoip_categories()
+        .await
+        .map_err(|e| e.to_string())?;
+
     Ok(Json(AvailableGeoOptions { geosite, geoip }))
 }
 
@@ -604,9 +663,7 @@ async fn get_geo_options(
         (status = 403, description = "Export disabled", body = String)
     )
 )]
-async fn export_domains(
-    State(app): State<Arc<App>>,
-) -> impl IntoResponse {
+async fn export_domains(State(app): State<Arc<App>>) -> impl IntoResponse {
     let config = app.current_config();
     if !config.export_enabled {
         return (StatusCode::FORBIDDEN, "Export disabled").into_response();
@@ -616,9 +673,13 @@ async fn export_domains(
         Ok(domains) => {
             let body = domains.join("\n");
             (
-                [(axum::http::header::CONTENT_TYPE, "text/plain; charset=utf-8")],
-                body
-            ).into_response()
+                [(
+                    axum::http::header::CONTENT_TYPE,
+                    "text/plain; charset=utf-8",
+                )],
+                body,
+            )
+                .into_response()
         }
         Err(e) => (StatusCode::INTERNAL_SERVER_ERROR, e.to_string()).into_response(),
     }
@@ -633,9 +694,7 @@ async fn export_domains(
         (status = 403, description = "Export disabled", body = String)
     )
 )]
-async fn export_ips(
-    State(app): State<Arc<App>>,
-) -> impl IntoResponse {
+async fn export_ips(State(app): State<Arc<App>>) -> impl IntoResponse {
     let config = app.current_config();
     if !config.export_enabled {
         return (StatusCode::FORBIDDEN, "Export disabled").into_response();
@@ -643,11 +702,19 @@ async fn export_ips(
 
     match app.controller().get_all_subnets().await {
         Ok(subnets) => {
-            let body = subnets.into_iter().map(|(s, _, _)| s).collect::<Vec<_>>().join("\n");
+            let body = subnets
+                .into_iter()
+                .map(|(subnet, _, _, _)| subnet)
+                .collect::<Vec<_>>()
+                .join("\n");
             (
-                [(axum::http::header::CONTENT_TYPE, "text/plain; charset=utf-8")],
-                body
-            ).into_response()
+                [(
+                    axum::http::header::CONTENT_TYPE,
+                    "text/plain; charset=utf-8",
+                )],
+                body,
+            )
+                .into_response()
         }
         Err(e) => (StatusCode::INTERNAL_SERVER_ERROR, e.to_string()).into_response(),
     }
