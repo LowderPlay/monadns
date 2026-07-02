@@ -1,16 +1,23 @@
+use crate::domain_controller::PolicyId;
+use crate::route_controller::RouteController;
 use dashmap::DashMap;
 use ipnet::IpNet;
+use log::info;
 use lru::LruCache;
 use std::net::{IpAddr, Ipv4Addr, Ipv6Addr};
 use std::num::NonZeroUsize;
 use std::sync::Arc;
-use log::info;
 use tokio::sync::Mutex;
-use crate::route_controller::RouteController;
+
+#[derive(Clone, Copy)]
+struct AssignedIp {
+    fake_ip: IpAddr,
+    fwmark: u32,
+}
 
 pub struct IpManager {
-    real_to_fake: DashMap<(IpAddr, String), IpAddr>,
-    fake_to_real: DashMap<IpAddr, (IpAddr, String)>,
+    real_to_fake: DashMap<(IpAddr, PolicyId), AssignedIp>,
+    fake_to_real: DashMap<IpAddr, (IpAddr, PolicyId)>,
     state: Mutex<IpManagerState>,
     network: IpNet,
     controller: Arc<dyn RouteController>,
@@ -84,12 +91,30 @@ impl IpManager {
         }
     }
 
-    pub async fn get_or_assign_ip(&self, real: &IpAddr, interface: &str, fwmark: u32) -> anyhow::Result<IpAddr> {
-        let key = (*real, interface.to_string());
-        if let Some(ip) = self.real_to_fake.get(&key).map(|r| *r) {
+    pub async fn get_or_assign_ip(
+        &self,
+        real: &IpAddr,
+        policy_id: PolicyId,
+        fwmark: u32,
+    ) -> anyhow::Result<IpAddr> {
+        let key = (*real, policy_id);
+        if let Some(assigned) = self.real_to_fake.get(&key).map(|r| *r) {
             let mut state = self.state.lock().await;
-            state.lru.get(&ip);
-            return Ok(ip);
+            state.lru.get(&assigned.fake_ip);
+            drop(state);
+
+            if assigned.fwmark != fwmark {
+                self.real_to_fake.insert(
+                    key,
+                    AssignedIp {
+                        fake_ip: assigned.fake_ip,
+                        fwmark,
+                    },
+                );
+                self.controller.set_policy_mark(policy_id, fwmark).await?;
+            }
+
+            return Ok(assigned.fake_ip);
         }
 
         let ip = {
@@ -104,8 +129,14 @@ impl IpManager {
                         self.real_to_fake.remove(&old_key);
                     }
                 }
-                
-                self.real_to_fake.insert(key.clone(), ip);
+
+                self.real_to_fake.insert(
+                    key,
+                    AssignedIp {
+                        fake_ip: ip,
+                        fwmark,
+                    },
+                );
                 self.fake_to_real.insert(ip, key);
                 ip
             } else {
@@ -114,14 +145,22 @@ impl IpManager {
                     self.real_to_fake.remove(&old_key);
                 }
 
-                self.real_to_fake.insert(key.clone(), old_ip);
+                self.real_to_fake.insert(
+                    key,
+                    AssignedIp {
+                        fake_ip: old_ip,
+                        fwmark,
+                    },
+                );
                 self.fake_to_real.insert(old_ip, key);
                 state.lru.put(old_ip, ());
                 old_ip
             }
         };
 
-        self.controller.add_mapping(ip, *real, fwmark).await?;
+        self.controller
+            .add_mapping(ip, *real, policy_id, fwmark)
+            .await?;
 
         Ok(ip)
     }

@@ -52,6 +52,7 @@ export interface PatchConfig {
 }
 
 export interface DomainRule {
+  id?: number;
   domain: string;
   include_subdomains: boolean;
   interface: string | null;
@@ -68,6 +69,7 @@ export interface DomainList {
 }
 
 export interface IpRule {
+  id?: number;
   subnet: string;
   interface: string | null;
 }
