@@ -1,37 +1,50 @@
 <script lang="ts">
-  import { api, type Config } from './api';
-  import { onMount } from 'svelte';
+import { onMount } from "svelte";
+import { api, type Config } from "./api";
 
-  interface Props {
-    value: string | null;
-    onchange: (value: string | null) => void;
-    id?: string;
-  }
+interface Props {
+	value: string | null;
+	onchange: (value: string | null) => void | Promise<void>;
+	id?: string;
+	showLabel?: boolean;
+	compact?: boolean;
+	disabled?: boolean;
+}
 
-  let { value, onchange, id = 'interface_select' }: Props = $props();
-  let config = $state<Config | null>(null);
+let {
+	value,
+	onchange,
+	id = "interface_select",
+	showLabel = true,
+	compact = false,
+	disabled = false,
+}: Props = $props();
+let config = $state<Config | null>(null);
 
-  onMount(async () => {
-    try {
-      config = await api.getConfig();
-    } catch (e) {
-      console.error('Failed to load config for InterfaceSelect', e);
-    }
-  });
+onMount(async () => {
+	try {
+		config = await api.getConfig();
+	} catch (e) {
+		console.error("Failed to load config for InterfaceSelect", e);
+	}
+});
 
-  function handleChange(e: Event) {
-    const val = (e.target as HTMLSelectElement).value;
-    onchange(val === 'default' ? null : val);
-  }
+function handleChange(e: Event) {
+	const val = (e.target as HTMLSelectElement).value;
+	void onchange(val === "default" ? null : val);
+}
 </script>
 
 <div class="flex flex-col gap-1">
-  <label for={id} class="text-sm text-zinc-400 font-bold">Interface</label>
+  {#if showLabel}
+    <label for={id} class="text-sm text-zinc-400 font-bold">Interface</label>
+  {/if}
   <select 
     {id} 
     value={value === null ? 'default' : value} 
     onchange={handleChange}
-    class="bg-zinc-950 border border-zinc-700 p-2 focus:outline-none focus:border-zinc-500 w-full"
+    {disabled}
+    class="bg-zinc-950 border border-zinc-700 focus:outline-none focus:border-zinc-500 w-full disabled:opacity-60 disabled:cursor-wait {compact ? 'px-2 py-1 text-xs' : 'p-2'}"
   >
     <option value="default">Default ({config?.default_interface || '...' })</option>
     {#if config}

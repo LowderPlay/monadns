@@ -1,9 +1,13 @@
 use std::process::Stdio;
+use std::sync::Arc;
 use std::time::Duration;
 
+use dashmap::DashMap;
 use log::{debug, error, warn};
+use serde::Serialize;
 use tokio::process::Command;
 use tokio::task::JoinHandle;
+use utoipa::ToSchema;
 
 use crate::config::InterfaceConfig;
 
@@ -20,10 +24,25 @@ struct PingMeasurements {
     packet_loss_percent: f64,
 }
 
+#[derive(Clone, Debug, Serialize, ToSchema)]
+pub struct InterfaceHealthStatus {
+    pub interface: String,
+    pub host: String,
+    pub enabled: bool,
+    pub healthy: bool,
+    pub latency_ms: Option<f64>,
+    pub packet_loss_percent: f64,
+    pub updated_at_ms: i64,
+    pub error: Option<String>,
+}
+
+pub type InterfaceHealthRegistry = Arc<DashMap<(String, String), InterfaceHealthStatus>>;
+
 pub fn spawn(
     interface: InterfaceConfig,
     host: String,
     settings: HealthCheckSettings,
+    registry: InterfaceHealthRegistry,
 ) -> JoinHandle<()> {
     tokio::spawn(async move {
         let labels = [
@@ -35,6 +54,7 @@ pub fn spawn(
             metrics::gauge!("interface_healthy", &labels).set(0.0);
             metrics::gauge!("interface_latency_milliseconds", &labels).set(0.0);
             metrics::gauge!("interface_packet_loss_percent", &labels).set(0.0);
+            update_registry(&registry, &interface, &host, false, false, None, 0.0, None);
             debug!("health check disabled for interface {}", interface.name);
             return;
         }
@@ -62,6 +82,16 @@ pub fn spawn(
                     } else {
                         0.0
                     });
+                    update_registry(
+                        &registry,
+                        &interface,
+                        &host,
+                        true,
+                        healthy,
+                        measurements.latency_ms,
+                        measurements.packet_loss_percent,
+                        None,
+                    );
 
                     if healthy {
                         debug!(
@@ -91,6 +121,16 @@ pub fn spawn(
                     metrics::gauge!("interface_packet_loss_percent", &labels).set(100.0);
                     metrics::gauge!("interface_latency_milliseconds", &labels).set(0.0);
                     metrics::gauge!("interface_healthy", &labels).set(0.0);
+                    update_registry(
+                        &registry,
+                        &interface,
+                        &host,
+                        true,
+                        false,
+                        None,
+                        100.0,
+                        Some(err.to_string()),
+                    );
                     error!(
                         "interface {} health check to {} failed: {}",
                         interface.name, host, err
@@ -99,6 +139,31 @@ pub fn spawn(
             }
         }
     })
+}
+
+fn update_registry(
+    registry: &InterfaceHealthRegistry,
+    interface: &InterfaceConfig,
+    host: &str,
+    enabled: bool,
+    healthy: bool,
+    latency_ms: Option<f64>,
+    packet_loss_percent: f64,
+    error: Option<String>,
+) {
+    registry.insert(
+        (interface.name.clone(), host.to_string()),
+        InterfaceHealthStatus {
+            interface: interface.name.clone(),
+            host: host.to_string(),
+            enabled,
+            healthy,
+            latency_ms,
+            packet_loss_percent,
+            updated_at_ms: chrono::Utc::now().timestamp_millis(),
+            error,
+        },
+    );
 }
 
 async fn check(

@@ -1,17 +1,17 @@
 <script lang="ts">
-  import { auth } from './auth_state.svelte';
-  import { toast } from './toast_state.svelte';
-  
-  let password = $state('');
+import { auth } from "./auth_state.svelte";
+import { toast } from "./toast_state.svelte";
 
-  function handleSubmit() {
-    if (password) {
-      auth.setKey(password);
-      password = '';
-      toast.success('API key updated. Reloading data...');
-      window.location.reload(); // Simplest way to retry all pending data loads
-    }
-  }
+let password = $state("");
+
+function handleSubmit() {
+	if (password) {
+		auth.setKey(password);
+		password = "";
+		toast.success("API key updated. Reloading data...");
+		window.location.reload(); // Simplest way to retry all pending data loads
+	}
+}
 </script>
 
 {#if auth.needsLogin}

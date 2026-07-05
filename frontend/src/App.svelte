@@ -1,26 +1,32 @@
 <script lang="ts">
-  import ConfigTab from './lib/ConfigTab.svelte';
-  import DomainListsTab from './lib/DomainListsTab.svelte';
-  import GeoSourcesTab from './lib/GeoSourcesTab.svelte';
-  import DomainsTab from './lib/DomainsTab.svelte';
-  import IpListsTab from './lib/IpListsTab.svelte';
-  import IpRulesTab from './lib/IpRulesTab.svelte';
-  import Toast from "./lib/Toast.svelte";
-  import Icon from "./assets/Icon.svelte";
-  import LoginOverlay from "./lib/LoginOverlay.svelte";
-  import { auth } from "./lib/auth_state.svelte";
+import Icon from "./assets/Icon.svelte";
+import { auth } from "./lib/auth_state.svelte";
+import ConfigTab from "./lib/ConfigTab.svelte";
+import DomainListsTab from "./lib/DomainListsTab.svelte";
+import DomainsTab from "./lib/DomainsTab.svelte";
+import GeoSourcesTab from "./lib/GeoSourcesTab.svelte";
+import IpListsTab from "./lib/IpListsTab.svelte";
+import IpRulesTab from "./lib/IpRulesTab.svelte";
+import LoginOverlay from "./lib/LoginOverlay.svelte";
+import Toast from "./lib/Toast.svelte";
 
-  type Tab = 'config' | 'lists' | 'geo-sources' | 'domains' | 'ip-lists' | 'ip-rules';
-  let activeTab = $state<Tab>('config');
+type Tab =
+	| "config"
+	| "lists"
+	| "geo-sources"
+	| "domains"
+	| "ip-lists"
+	| "ip-rules";
+let activeTab = $state<Tab>("config");
 
-  const tabs: { id: Tab; label: string }[] = [
-    { id: 'config', label: 'Configuration' },
-    { id: 'lists', label: 'Domain Lists' },
-    { id: 'geo-sources', label: 'Geo Sources' },
-    { id: 'domains', label: 'Domains' },
-    { id: 'ip-lists', label: 'IP Lists' },
-    { id: 'ip-rules', label: 'IP Rules' },
-  ];
+const tabs: { id: Tab; label: string }[] = [
+	{ id: "config", label: "Configuration" },
+	{ id: "lists", label: "Domain Lists" },
+	{ id: "geo-sources", label: "Geo Sources" },
+	{ id: "domains", label: "Domains" },
+	{ id: "ip-lists", label: "IP Lists" },
+	{ id: "ip-rules", label: "IP Rules" },
+];
 </script>
 
 <div class="min-h-screen bg-[#0a0a0a] text-[#e5e5e5] flex flex-col items-center p-4 md:p-8">

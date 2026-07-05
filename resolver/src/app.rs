@@ -3,7 +3,9 @@ use crate::domain_controller::sqlite::SqliteController;
 use crate::domain_controller::{DomainController, PolicyId};
 use crate::fake_ip::IpManager;
 use crate::handler::{FakeIpHandler, HandlerState};
-use crate::health_check::{self, HealthCheckSettings};
+use crate::health_check::{
+    self, HealthCheckSettings, InterfaceHealthRegistry, InterfaceHealthStatus,
+};
 use crate::route_controller::RouteController;
 use crate::route_controller::nftables::NetworkManager;
 use arc_swap::ArcSwap;
@@ -18,6 +20,7 @@ pub struct App {
     handler: FakeIpHandler,
     config: Arc<ArcSwap<Config>>,
     controller: Arc<SqliteController>,
+    health_status: InterfaceHealthRegistry,
     health_check_tasks: std::sync::Mutex<Vec<tokio::task::JoinHandle<()>>>,
 }
 
@@ -33,6 +36,7 @@ impl App {
             handler,
             config,
             controller,
+            health_status: Arc::new(dashmap::DashMap::new()),
             health_check_tasks: std::sync::Mutex::new(Vec::new()),
         };
         app.start_metrics_worker();
@@ -48,15 +52,19 @@ impl App {
         }
 
         let config = self.config.load();
+        self.health_status.clear();
         let settings = HealthCheckSettings {
             interval_seconds: config.health_check_interval_seconds.max(1),
             timeout_seconds: config.health_check_timeout_seconds.max(1),
             ping_count: config.health_check_ping_count.max(1),
         };
         tasks.extend(config.interfaces.iter().flat_map(|interface| {
+            let health_status = self.health_status.clone();
             interface.health_check_hosts.iter().cloned().map({
                 let interface = interface.clone();
-                move |host| health_check::spawn(interface.clone(), host, settings)
+                move |host| {
+                    health_check::spawn(interface.clone(), host, settings, health_status.clone())
+                }
             })
         }));
         info!("started {} interface health check workers", tasks.len());
@@ -133,6 +141,20 @@ impl App {
 
     pub fn controller(&self) -> Arc<SqliteController> {
         self.controller.clone()
+    }
+
+    pub fn interface_health_statuses(&self) -> Vec<InterfaceHealthStatus> {
+        let mut statuses = self
+            .health_status
+            .iter()
+            .map(|entry| entry.value().clone())
+            .collect::<Vec<_>>();
+        statuses.sort_by(|a, b| {
+            a.interface
+                .cmp(&b.interface)
+                .then_with(|| a.host.cmp(&b.host))
+        });
+        statuses
     }
 
     fn build_upstream_resolver(config: &Config) -> TokioResolver {

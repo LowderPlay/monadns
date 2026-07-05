@@ -1,14 +1,14 @@
 <script lang="ts">
-  import { api, type IpList } from './api';
-  import ListManager from './ListManager.svelte';
+import { api, type IpList } from "./api";
+import ListManager from "./ListManager.svelte";
 
-  const initialNewEntity: IpList = {
-    url: '',
-    update_interval_seconds: 86400,
-    last_updated: null,
-    interface: null,
-    priority: 0
-  };
+const initialNewEntity: IpList = {
+	url: "",
+	update_interval_seconds: 86400,
+	last_updated: null,
+	interface: null,
+	priority: 0,
+};
 </script>
 
 <ListManager

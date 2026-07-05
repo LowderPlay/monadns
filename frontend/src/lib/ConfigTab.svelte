@@ -5,6 +5,7 @@ import Trash from "../assets/Trash.svelte";
 import {
 	api,
 	type Config,
+	type InterfaceHealthStatus,
 	type ResolverProtocol,
 	type UpstreamResolverConfig,
 } from "./api";
@@ -12,13 +13,30 @@ import { toast } from "./toast_state.svelte";
 
 let config = $state<Config | null>(null);
 let saving = $state(false);
+let interfaceHealth = $state<InterfaceHealthStatus[]>([]);
+let healthError = $state<string | null>(null);
 
-onMount(async () => {
+async function loadInterfaceHealth() {
 	try {
-		config = await api.getConfig();
+		interfaceHealth = await api.getInterfaceHealth();
+		healthError = null;
 	} catch (e: any) {
-		toast.error("Failed to load config: " + e.message);
+		healthError = e.message;
 	}
+}
+
+onMount(() => {
+	void (async () => {
+		try {
+			config = await api.getConfig();
+			await loadInterfaceHealth();
+		} catch (e: any) {
+			toast.error("Failed to load config: " + e.message);
+		}
+	})();
+
+	const interval = window.setInterval(loadInterfaceHealth, 5000);
+	return () => window.clearInterval(interval);
 });
 
 async function save() {
@@ -143,6 +161,23 @@ function removeHealthCheckHost(interfaceIndex: number, hostIndex: number) {
 			interfaceIndex
 		].health_check_hosts.filter((_, index) => index !== hostIndex);
 	}
+}
+
+function healthStatusesForInterface(interfaceName: string) {
+	return interfaceHealth.filter((status) => status.interface === interfaceName);
+}
+
+function formatLatency(status: InterfaceHealthStatus) {
+	return status.latency_ms === null ? "—" : `${status.latency_ms.toFixed(1)}ms`;
+}
+
+function formatLoss(status: InterfaceHealthStatus) {
+	return `${status.packet_loss_percent.toFixed(1)}%`;
+}
+
+function formatUpdated(status: InterfaceHealthStatus) {
+	if (!status.updated_at_ms) return "never";
+	return new Date(status.updated_at_ms).toLocaleTimeString();
 }
 
 function handleResolverChange(e: Event) {
@@ -299,11 +334,50 @@ function handleResolverChange(e: Event) {
 
       <div class="space-y-6 mt-4">
         {#each config.interfaces as iface, i}
+          {@const healthStatuses = healthStatusesForInterface(iface.name)}
           <div class="border border-zinc-800 p-6 space-y-4 bg-zinc-950/30">
-            <div class="flex items-center justify-between">
-              <h3 class="font-bold text-white uppercase tracking-widest text-xs">
-                Interface: {iface.name} {#if iface.name === config.default_interface}(Default){/if}
-              </h3>
+            <div class="flex items-start justify-between gap-4">
+              <div class="flex flex-wrap items-center gap-2 min-w-0">
+                <h3 class="font-bold text-white uppercase tracking-widest text-xs">
+                  Interface: {iface.name} {#if iface.name === config.default_interface}(Default){/if}
+                </h3>
+
+                {#if healthError}
+                  <span class="rounded-full border border-red-900/60 bg-red-950/30 px-2 py-0.5 text-[10px] font-bold uppercase tracking-widest text-red-400" title={healthError}>
+                    Health unavailable
+                  </span>
+                {:else if !iface.health_check_enabled}
+                  <span class="rounded-full border border-zinc-800 bg-zinc-900 px-2 py-0.5 text-[10px] font-bold uppercase tracking-widest text-zinc-500">
+                    Health off
+                  </span>
+                {:else if healthStatuses.length === 0}
+                  <span class="rounded-full border border-zinc-800 bg-zinc-900 px-2 py-0.5 text-[10px] font-bold uppercase tracking-widest text-zinc-500">
+                    Waiting
+                  </span>
+                {:else if healthStatuses.every((status) => status.healthy)}
+                  <span class="rounded-full border border-emerald-900/70 bg-emerald-950/30 px-2 py-0.5 text-[10px] font-bold uppercase tracking-widest text-emerald-400">
+                    Healthy
+                  </span>
+                {:else}
+                  <span class="rounded-full border border-red-900/70 bg-red-950/30 px-2 py-0.5 text-[10px] font-bold uppercase tracking-widest text-red-400">
+                    Unhealthy
+                  </span>
+                {/if}
+
+                {#each healthStatuses as status}
+                  <span
+                    class="inline-flex max-w-full items-center gap-1 rounded-full border px-2 py-0.5 text-[10px] font-mono {status.healthy ? 'border-emerald-900/70 bg-emerald-950/20 text-emerald-300' : 'border-red-900/70 bg-red-950/20 text-red-300'}"
+                    title="{status.host}: ping {formatLatency(status)}, loss {formatLoss(status)}, updated {formatUpdated(status)}{status.error ? `, error: ${status.error}` : ''}"
+                  >
+                    <span class="max-w-36 truncate">{status.host}</span>
+                    <span class="text-zinc-500">·</span>
+                    <span>{formatLatency(status)}</span>
+                    <span class="text-zinc-500">·</span>
+                    <span>{formatLoss(status)}</span>
+                  </span>
+                {/each}
+              </div>
+
               <button onclick={() => removeInterface(i)} class="text-red-500 hover:text-red-400 p-2 transition-colors">
                 <Trash />
               </button>

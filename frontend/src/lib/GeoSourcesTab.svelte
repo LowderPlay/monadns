@@ -1,13 +1,13 @@
 <script lang="ts">
-  import { api, type GeoSource } from './api';
-  import ListManager from './ListManager.svelte';
+import { api, type GeoSource } from "./api";
+import ListManager from "./ListManager.svelte";
 
-  const initialNewEntity: GeoSource = {
-    url: '',
-    type: 'geosite',
-    update_interval_seconds: 86400,
-    last_updated: null
-  };
+const initialNewEntity: GeoSource = {
+	url: "",
+	type: "geosite",
+	update_interval_seconds: 86400,
+	last_updated: null,
+};
 </script>
 
 <ListManager

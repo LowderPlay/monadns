@@ -1,15 +1,15 @@
 <script lang="ts">
-  import { api, type DomainList } from './api';
-  import ListManager from './ListManager.svelte';
+import { api, type DomainList } from "./api";
+import ListManager from "./ListManager.svelte";
 
-  const initialNewEntity: DomainList = {
-    url: '',
-    update_interval_seconds: 86400,
-    include_subdomains: true,
-    last_updated: null,
-    interface: null,
-    priority: 0
-  };
+const initialNewEntity: DomainList = {
+	url: "",
+	update_interval_seconds: 86400,
+	include_subdomains: true,
+	last_updated: null,
+	interface: null,
+	priority: 0,
+};
 </script>
 
 <ListManager

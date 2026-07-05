@@ -210,6 +210,24 @@ impl SqliteController {
     }
 
     pub async fn add_domain_list(&self, list: DomainList) -> anyhow::Result<i64> {
+        if let Some(id) = list.id {
+            sqlx::query(
+                "UPDATE domain_lists
+                 SET url = ?, update_interval_seconds = ?, include_subdomains = ?, interface = ?, priority = ?
+                 WHERE id = ?",
+            )
+            .bind(&list.url)
+            .bind(list.update_interval_seconds)
+            .bind(list.include_subdomains)
+            .bind(list.interface)
+            .bind(list.priority)
+            .bind(id)
+            .execute(&self.pool)
+            .await?;
+
+            return Ok(id);
+        }
+
         let res = sqlx::query(
             "INSERT INTO domain_lists (url, update_interval_seconds, include_subdomains, interface, priority) VALUES (?, ?, ?, ?, ?)"
         )
@@ -321,6 +339,23 @@ impl SqliteController {
     }
 
     pub async fn add_ip_list(&self, list: IpList) -> anyhow::Result<i64> {
+        if let Some(id) = list.id {
+            sqlx::query(
+                "UPDATE ip_lists
+                 SET url = ?, update_interval_seconds = ?, interface = ?, priority = ?
+                 WHERE id = ?",
+            )
+            .bind(&list.url)
+            .bind(list.update_interval_seconds)
+            .bind(list.interface)
+            .bind(list.priority)
+            .bind(id)
+            .execute(&self.pool)
+            .await?;
+
+            return Ok(id);
+        }
+
         let res = sqlx::query(
             "INSERT INTO ip_lists (url, update_interval_seconds, interface, priority) VALUES (?, ?, ?, ?)"
         )

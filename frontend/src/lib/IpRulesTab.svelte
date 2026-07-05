@@ -1,11 +1,11 @@
 <script lang="ts">
-  import { api, type IpRule } from './api';
-  import RuleManager from './RuleManager.svelte';
+import { api, type IpRule } from "./api";
+import RuleManager from "./RuleManager.svelte";
 
-  const initialNewEntity: IpRule = {
-    subnet: '',
-    interface: null
-  };
+const initialNewEntity: IpRule = {
+	subnet: "",
+	interface: null,
+};
 </script>
 
 <RuleManager

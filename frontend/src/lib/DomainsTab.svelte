@@ -1,12 +1,12 @@
 <script lang="ts">
-  import { api, type DomainRule } from './api';
-  import RuleManager from './RuleManager.svelte';
+import { api, type DomainRule } from "./api";
+import RuleManager from "./RuleManager.svelte";
 
-  const initialNewEntity: DomainRule = {
-    domain: '',
-    include_subdomains: true,
-    interface: null
-  };
+const initialNewEntity: DomainRule = {
+	domain: "",
+	include_subdomains: true,
+	interface: null,
+};
 </script>
 
 <RuleManager

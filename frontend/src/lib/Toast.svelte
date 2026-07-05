@@ -1,7 +1,7 @@
 <script lang="ts">
-  import { toast } from './toast_state.svelte';
-  import { flip } from 'svelte/animate';
-  import { fade, fly } from 'svelte/transition';
+import { flip } from "svelte/animate";
+import { fade, fly } from "svelte/transition";
+import { toast } from "./toast_state.svelte";
 </script>
 
 <div class="fixed bottom-4 right-4 z-50 flex flex-col gap-2 pointer-events-none">

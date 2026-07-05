@@ -1,137 +1,186 @@
 <script lang="ts" generics="T extends { id?: number; url: string; update_interval_seconds: number; last_updated: string | null; interface?: string | null; }">
-  import { onMount } from 'svelte';
-  import { toast } from './toast_state.svelte';
-  import { api, type AvailableGeoOptions } from './api';
-  import type { Snippet } from 'svelte';
-  import InterfaceSelect from './InterfaceSelect.svelte';
+import type { Snippet } from "svelte";
+import { onMount } from "svelte";
+import { type AvailableGeoOptions, api } from "./api";
+import InterfaceSelect from "./InterfaceSelect.svelte";
+import { toast } from "./toast_state.svelte";
 
-  interface Props {
-    title: string;
-    addLabel: string;
-    emptyMessage: string;
-    fetchData: () => Promise<T[]>;
-    addEntity: (entity: T) => Promise<any>;
-    removeEntity: (id: number) => Promise<any>;
-    syncEntity: (id: number) => Promise<any>;
-    reorderEntities?: (ids: number[]) => Promise<any>;
-    initialNewEntity: T;
-    // Snippets for customization
-    extraFields?: Snippet<[{ entity: T, useGeo: boolean }]>;
-    extraHeaders?: Snippet;
-    extraCells?: Snippet<[{ entity: T }]>;
-    geoPrefix?: 'geosite://' | 'geoip://';
-    showInterface?: boolean;
-  }
+interface Props {
+	title: string;
+	addLabel: string;
+	emptyMessage: string;
+	fetchData: () => Promise<T[]>;
+	addEntity: (entity: T) => Promise<any>;
+	removeEntity: (id: number) => Promise<any>;
+	syncEntity: (id: number) => Promise<any>;
+	reorderEntities?: (ids: number[]) => Promise<any>;
+	initialNewEntity: T;
+	// Snippets for customization
+	extraFields?: Snippet<[{ entity: T; useGeo: boolean }]>;
+	extraHeaders?: Snippet;
+	extraCells?: Snippet<[{ entity: T }]>;
+	geoPrefix?: "geosite://" | "geoip://";
+	showInterface?: boolean;
+}
 
-  let { 
-    title, addLabel, emptyMessage, 
-    fetchData, addEntity, removeEntity, syncEntity, reorderEntities,
-    initialNewEntity,
-    extraFields, extraHeaders, extraCells,
-    geoPrefix,
-    showInterface = true
-  }: Props = $props();
+let {
+	title,
+	addLabel,
+	emptyMessage,
+	fetchData,
+	addEntity,
+	removeEntity,
+	syncEntity,
+	reorderEntities,
+	initialNewEntity,
+	extraFields,
+	extraHeaders,
+	extraCells,
+	geoPrefix,
+	showInterface = true,
+}: Props = $props();
 
+let items = $state<T[]>([]);
+let error = $state<string | null>(null);
+let loading = $state(true);
+let savingInterfaces = $state<Record<string, boolean>>({});
 
-  let items = $state<T[]>([]);
-  let error = $state<string | null>(null);
-  let loading = $state(true);
+// Form for adding new list
+let newEntity = $state<T>({ ...initialNewEntity });
+let adding = $state(false);
 
-  // Form for adding new list
-  let newEntity = $state<T>({ ...initialNewEntity });
-  let adding = $state(false);
+let geoOptions = $state<AvailableGeoOptions | null>(null);
+let useGeo = $state(false);
+let selectedGeo = $state("");
 
-  let geoOptions = $state<AvailableGeoOptions | null>(null);
-  let useGeo = $state(false);
-  let selectedGeo = $state('');
+async function loadData() {
+	loading = true;
+	try {
+		items = await fetchData();
+		if (geoPrefix) {
+			geoOptions = await api.getGeoOptions();
+		}
+	} catch (e: any) {
+		error = e.message;
+		toast.error("Failed to load data: " + e.message);
+	} finally {
+		loading = false;
+	}
+}
 
-  async function loadData() {
-    loading = true;
-    try {
-      items = await fetchData();
-      if (geoPrefix) {
-        geoOptions = await api.getGeoOptions();
-      }
-    } catch (e: any) {
-      error = e.message;
-      toast.error('Failed to load data: ' + e.message);
-    } finally {
-      loading = false;
-    }
-  }
+onMount(loadData);
 
-  onMount(loadData);
+$effect(() => {
+	if (useGeo && geoPrefix && selectedGeo) {
+		newEntity.url = geoPrefix + selectedGeo;
+	}
+});
 
-  $effect(() => {
-    if (useGeo && geoPrefix && selectedGeo) {
-      newEntity.url = geoPrefix + selectedGeo;
-    }
-  });
+async function addItem() {
+	if (!newEntity.url) return;
+	adding = true;
+	try {
+		await addEntity(newEntity);
+		newEntity = { ...initialNewEntity };
+		toast.success(`${title} added`);
+		await loadData();
+	} catch (e: any) {
+		error = e.message;
+		toast.error(`Failed to add ${title.toLowerCase()}: ` + e.message);
+	} finally {
+		adding = false;
+	}
+}
 
-  async function addItem() {
-    if (!newEntity.url) return;
-    adding = true;
-    try {
-      await addEntity(newEntity);
-      newEntity = { ...initialNewEntity };
-      toast.success(`${title} added`);
-      await loadData();
-    } catch (e: any) {
-      error = e.message;
-      toast.error(`Failed to add ${title.toLowerCase()}: ` + e.message);
-    } finally {
-      adding = false;
-    }
-  }
+async function deleteItem(id: number) {
+	if (!confirm("Are you sure?")) return;
+	try {
+		await removeEntity(id);
+		toast.success(`${title} removed`);
+		await loadData();
+	} catch (e: any) {
+		error = e.message;
+		toast.error(`Failed to remove ${title.toLowerCase()}: ` + e.message);
+	}
+}
 
-  async function deleteItem(id: number) {
-    if (!confirm('Are you sure?')) return;
-    try {
-      await removeEntity(id);
-      toast.success(`${title} removed`);
-      await loadData();
-    } catch (e: any) {
-      error = e.message;
-      toast.error(`Failed to remove ${title.toLowerCase()}: ` + e.message);
-    }
-  }
+async function syncItem(id: number) {
+	try {
+		await syncEntity(id);
+		toast.success("Sync started");
+		await loadData();
+	} catch (e: any) {
+		error = e.message;
+		toast.error("Sync failed: " + e.message);
+	}
+}
 
-  async function syncItem(id: number) {
-    try {
-      await syncEntity(id);
-      toast.success('Sync started');
-      await loadData();
-    } catch (e: any) {
-      error = e.message;
-      toast.error('Sync failed: ' + e.message);
-    }
-  }
+function itemKey(item: T) {
+	return String(item.id ?? "");
+}
 
-  async function moveItem(index: number, direction: 'up' | 'down') {
-    if (!reorderEntities) return;
-    
-    const newItems = [...items];
-    const targetIndex = direction === 'up' ? index - 1 : index + 1;
-    
-    if (targetIndex < 0 || targetIndex >= newItems.length) return;
-    
-    const [movedItem] = newItems.splice(index, 1);
-    newItems.splice(targetIndex, 0, movedItem);
-    
-    try {
-      const ids = newItems.map(item => item.id!).filter(id => id !== undefined);
-      await reorderEntities(ids);
-      items = newItems;
-      toast.success('Order updated');
-    } catch (e: any) {
-      toast.error('Failed to reorder: ' + e.message);
-    }
-  }
+function interfaceSelectId(item: T) {
+	return `list_interface_${itemKey(item).replace(/[^a-zA-Z0-9_-]/g, "_")}`;
+}
 
-  function formatDate(dateStr: string | null) {
-    if (!dateStr) return 'Never';
-    return new Date(dateStr).toLocaleString();
-  }
+async function updateInterface(item: T, value: string | null) {
+	const key = itemKey(item);
+	if (!key || item.interface === value || savingInterfaces[key]) return;
+
+	const previousInterface = item.interface ?? null;
+	const updated = { ...item, interface: value } as T;
+	items = items.map((current) =>
+		itemKey(current) === key ? updated : current,
+	);
+	savingInterfaces = { ...savingInterfaces, [key]: true };
+
+	try {
+		await addEntity(updated);
+		toast.success(`${title} interface updated`);
+	} catch (e: any) {
+		items = items.map((current) =>
+			itemKey(current) === key
+				? ({ ...current, interface: previousInterface } as T)
+				: current,
+		);
+		error = e.message;
+		toast.error(
+			`Failed to update ${title.toLowerCase()} interface: ` + e.message,
+		);
+	} finally {
+		const nextSavingInterfaces = { ...savingInterfaces };
+		delete nextSavingInterfaces[key];
+		savingInterfaces = nextSavingInterfaces;
+	}
+}
+
+async function moveItem(index: number, direction: "up" | "down") {
+	if (!reorderEntities) return;
+
+	const newItems = [...items];
+	const targetIndex = direction === "up" ? index - 1 : index + 1;
+
+	if (targetIndex < 0 || targetIndex >= newItems.length) return;
+
+	const [movedItem] = newItems.splice(index, 1);
+	newItems.splice(targetIndex, 0, movedItem);
+
+	try {
+		const ids = newItems
+			.map((item) => item.id!)
+			.filter((id) => id !== undefined);
+		await reorderEntities(ids);
+		items = newItems;
+		toast.success("Order updated");
+	} catch (e: any) {
+		toast.error("Failed to reorder: " + e.message);
+	}
+}
+
+function formatDate(dateStr: string | null) {
+	if (!dateStr) return "Never";
+	return new Date(dateStr).toLocaleString();
+}
 </script>
 
 <div class="space-y-6">
@@ -183,7 +232,7 @@
       {#if showInterface}
         <InterfaceSelect 
           value={newEntity.interface ?? null}
-          onchange={(val) => newEntity.interface = val} 
+          onchange={(val) => { newEntity.interface = val; }}
         />
       {/if}
 
@@ -251,7 +300,16 @@
             </td>
             <td class="p-2 truncate max-w-xs" title={item.url}>{item.url}</td>
             {#if showInterface}
-              <td class="p-2 text-center text-sm font-mono text-zinc-400">{item.interface || 'Default'}</td>
+              <td class="p-2 text-center text-sm font-mono text-zinc-400 min-w-40">
+                <InterfaceSelect
+                  id={interfaceSelectId(item)}
+                  value={item.interface ?? null}
+                  onchange={(val) => updateInterface(item, val)}
+                  showLabel={false}
+                  compact
+                  disabled={savingInterfaces[itemKey(item)]}
+                />
+              </td>
             {/if}
             
             {#if extraCells}

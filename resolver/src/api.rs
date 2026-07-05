@@ -2,6 +2,7 @@ use crate::app::App;
 use crate::config::{Config, PatchConfig, UpstreamResolverConfig};
 use crate::domain_controller::PolicyId;
 use crate::domain_controller::sqlite::{DomainList, DomainRule, GeoSource, IpList, IpRule};
+use crate::health_check::InterfaceHealthStatus;
 use axum::{
     Json, Router,
     extract::{Path, Request, State},
@@ -41,7 +42,7 @@ async fn set_policy_mark_for_interface(
 #[derive(OpenApi)]
 #[openapi(
     paths(
-        get_config, patch_config, 
+        get_config, patch_config, get_interface_health,
         list_domain_rules, add_domain_rule, remove_domain_rule, 
         list_domain_lists, add_domain_list, remove_domain_list, sync_domain_list, reorder_domain_lists,
         list_ip_rules, add_ip_rule, remove_ip_rule,
@@ -49,7 +50,7 @@ async fn set_policy_mark_for_interface(
         list_geo_sources, add_geo_source, remove_geo_source, sync_geo_source, get_geo_options,
         export_domains, export_ips
     ),
-    components(schemas(Config, PatchConfig, UpstreamResolverConfig, DomainRule, DomainList, IpRule, IpList, GeoSource, AvailableGeoOptions)),
+    components(schemas(Config, PatchConfig, UpstreamResolverConfig, DomainRule, DomainList, IpRule, IpList, GeoSource, AvailableGeoOptions, InterfaceHealthStatus)),
     modifiers(&SecurityAddon),
     security(
         ("api_key" = [])
@@ -100,6 +101,7 @@ async fn auth_middleware(req: Request, next: Next) -> Response {
 pub fn create_router(app: Arc<App>) -> Router {
     let (api_routes, openapi) = OpenApiRouter::with_openapi(ApiDoc::openapi())
         .route("/config", get(get_config).patch(patch_config))
+        .route("/health/interfaces", get(get_interface_health))
         .route("/domains", get(list_domain_rules).post(add_domain_rule))
         .route("/domains/{domain}", delete(remove_domain_rule))
         .route("/lists", get(list_domain_lists).post(add_domain_list))
@@ -133,6 +135,18 @@ pub fn create_router(app: Arc<App>) -> Router {
         .nest("/api/export", export_routes)
         .merge(SwaggerUi::new("/swagger").url("/api-docs/openapi.json", openapi))
         .fallback_service(serve_assets)
+}
+
+/// Get current interface health check status
+#[utoipa::path(
+    get,
+    path = "/health/interfaces",
+    responses(
+        (status = 200, description = "Interface health check status", body = [InterfaceHealthStatus])
+    )
+)]
+async fn get_interface_health(State(app): State<Arc<App>>) -> Json<Vec<InterfaceHealthStatus>> {
+    Json(app.interface_health_statuses())
 }
 
 /// Get current configuration
@@ -265,6 +279,7 @@ async fn add_domain_list(
     Json(list): Json<DomainList>,
 ) -> Result<Json<String>, String> {
     let interface = list.interface.clone();
+    let updating = list.id.is_some();
     let list_id = app
         .controller()
         .add_domain_list(list)
@@ -273,13 +288,15 @@ async fn add_domain_list(
     set_policy_mark_for_interface(&app, PolicyId::DomainList(list_id), interface.as_deref())
         .await?;
 
-    let controller = app.controller();
-    tokio::spawn(async move {
-        // Update after added
-        if let Err(e) = controller.sync_list_by_id(list_id).await {
-            error!("Failed to initial sync for list {}: {}", list_id, e);
-        }
-    });
+    if !updating {
+        let controller = app.controller();
+        tokio::spawn(async move {
+            // Update after added
+            if let Err(e) = controller.sync_list_by_id(list_id).await {
+                error!("Failed to initial sync for list {}: {}", list_id, e);
+            }
+        });
+    }
 
     Ok(Json(format!("Domain list added with id {}", list_id)))
 }
@@ -448,6 +465,7 @@ async fn add_ip_list(
     Json(list): Json<IpList>,
 ) -> Result<Json<String>, String> {
     let interface = list.interface.clone();
+    let updating = list.id.is_some();
     let list_id = app
         .controller()
         .add_ip_list(list)
@@ -455,13 +473,15 @@ async fn add_ip_list(
         .map_err(|e| e.to_string())?;
     set_policy_mark_for_interface(&app, PolicyId::IpList(list_id), interface.as_deref()).await?;
 
-    let controller = app.controller();
-    tokio::spawn(async move {
-        // Update after added
-        if let Err(e) = controller.sync_ip_list_by_id(list_id).await {
-            error!("Failed to initial sync for IP list {}: {}", list_id, e);
-        }
-    });
+    if !updating {
+        let controller = app.controller();
+        tokio::spawn(async move {
+            // Update after added
+            if let Err(e) = controller.sync_ip_list_by_id(list_id).await {
+                error!("Failed to initial sync for IP list {}: {}", list_id, e);
+            }
+        });
+    }
 
     Ok(Json(format!("IP list added with id {}", list_id)))
 }
