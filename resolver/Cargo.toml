@@ -17,7 +17,7 @@ log = "0.4.29"
 env_logger = "0.11.10"
 thiserror = "2.0.18"
 toml = "1"
-sqlx = { version = "0.8", features = ["sqlite", "runtime-tokio", "macros", "chrono"] }
+sqlx = { version = "0.9", features = ["sqlite", "runtime-tokio", "macros", "chrono"] }
 chrono = { version = "0.4.39", features = ["serde"] }
 reqwest = { version = "0.13.2" }
 nftables = "0.6.3"
