@@ -138,7 +138,7 @@ async function updateInterface(item: T, value: string | null) {
 
   <!-- Add New Rule Form -->
   <div class="bg-zinc-900 p-4 border border-zinc-800 space-y-4">
-    <h3 class="text-lg font-bold">Add new {title.toLowerCase()} rule</h3>
+    <h3 class="text-lg font-bold">Add new {title.toLowerCase()}</h3>
     <div class="grid grid-cols-1 md:grid-cols-2 lg:grid-cols-5 gap-4 items-end">
       <div class="flex flex-col gap-1 lg:col-span-2">
         <label for="rule_entity" class="text-sm text-zinc-400 font-bold">{title}</label>

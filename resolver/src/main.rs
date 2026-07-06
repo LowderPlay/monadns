@@ -3,6 +3,7 @@ mod app;
 mod config;
 mod domain_controller;
 pub mod error;
+mod failover;
 mod fake_ip;
 mod handler;
 mod health_check;

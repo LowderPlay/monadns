@@ -32,6 +32,8 @@ pub struct InterfaceHealthStatus {
     pub healthy: bool,
     pub latency_ms: Option<f64>,
     pub packet_loss_percent: f64,
+    pub healthy_since_ms: Option<i64>,
+    pub last_unhealthy_at_ms: Option<i64>,
     pub updated_at_ms: i64,
     pub error: Option<String>,
 }
@@ -151,6 +153,27 @@ fn update_registry(
     packet_loss_percent: f64,
     error: Option<String>,
 ) {
+    let now = chrono::Utc::now().timestamp_millis();
+    let previous = registry
+        .get(&(interface.name.clone(), host.to_string()))
+        .map(|status| status.clone());
+    let healthy_since_ms = if healthy {
+        previous
+            .as_ref()
+            .filter(|status| status.healthy)
+            .and_then(|status| status.healthy_since_ms)
+            .or(Some(now))
+    } else {
+        None
+    };
+    let last_unhealthy_at_ms = if healthy {
+        previous
+            .as_ref()
+            .and_then(|status| status.last_unhealthy_at_ms)
+    } else {
+        Some(now)
+    };
+
     registry.insert(
         (interface.name.clone(), host.to_string()),
         InterfaceHealthStatus {
@@ -160,7 +183,9 @@ fn update_registry(
             healthy,
             latency_ms,
             packet_loss_percent,
-            updated_at_ms: chrono::Utc::now().timestamp_millis(),
+            healthy_since_ms,
+            last_unhealthy_at_ms,
+            updated_at_ms: now,
             error,
         },
     );

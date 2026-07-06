@@ -9,6 +9,8 @@ This functionality provides a lightweight, transparent proxying mechanism akin t
 - **Fake IP DNS Resolution**: Intercepts DNS requests for specified domains and returns dynamically allocated IPv4 and IPv6 addresses from a configured subnet.
 - **Multi-Interface Traffic Steering**: Automatically maintains `nftables` chains and `ip rules` to mark and route traffic destined to the allocated Fake IPs through multiple designated interfaces and routing tables.
 - **IP-based Steering**: Beyond DNS-based steering, MonaDNS can also steer traffic based on destination IP subnets.
+- **Interface Health Checks**: Periodically pings one or more configured IPv4/IPv6 hosts per interface, measuring latency and packet loss.
+- **High Availability Failover**: Automatically switches policies away from unhealthy interfaces using a global or per-interface fallback order, then switches back after a configurable recovery delay.
 - **Automated NAT/Masquerade**: Optionally applies SNAT or Masquerade to the steered traffic per interface.
 - **TCP MSS Clamping**: Built-in support for MSS clamping to prevent fragmentation issues on tunnel interfaces (e.g., WireGuard).
 - **Upstream DNS Support**: Resolves non-intercepted domains via standard upstream resolvers including Quad9, Cloudflare, Google, or custom servers via UDP, DNS-over-TLS (DoT), or DNS-over-HTTPS (DoH).
@@ -17,7 +19,7 @@ This functionality provides a lightweight, transparent proxying mechanism akin t
 - **Virtual Geo Protocols**: Reference geo categories directly in your lists using `geosite://<category>` or `geoip://<category>` (e.g., `geosite://google`, `geoip://cn`).
 - **Integrated Web Interface**: A modern web UI built with Svelte 5 and TailwindCSS for managing configuration, domains, IPs, and lists.
 - **REST API**: Fully documented OpenAPI (Swagger) endpoints for programmatic management.
-- **Prometheus Metrics**: Built-in Prometheus exporter for monitoring DNS query metrics and traffic statistics.
+- **Prometheus Metrics**: Built-in Prometheus exporter for monitoring DNS query metrics, traffic statistics, and interface health.
 
 ## Use Cases
 
@@ -49,7 +51,7 @@ A Single Page Application (SPA) built with Svelte 5 and Vite. It interacts with 
 ## Requirements
 
 - **Linux OS**: MonaDNS heavily relies on Linux-specific networking APIs (`nftables` and `rtnetlink`).
-- **Root Privileges / Capabilities**: Running the backend requires root access or `CAP_NET_ADMIN` to manipulate network interfaces, routing tables, and firewall rules.
+- **Root Privileges / Capabilities**: Running the backend requires root access or `CAP_NET_ADMIN` to manipulate network interfaces, routing tables, and firewall rules. Health checks also require ICMP support, usually `CAP_NET_RAW`; `ping -m <fwmark>` additionally needs `CAP_NET_ADMIN`.
 - **Routing Tables**: For each interface you want to steer traffic through, you must ensure a default route exists in the corresponding routing table.
   For example, if you use interface `wg0` with table `100`:
   ```bash
@@ -91,6 +93,8 @@ export_enabled = false
 health_check_interval_seconds = 15
 health_check_timeout_seconds = 12
 health_check_ping_count = 5
+failover_recovery_delay_seconds = 60
+failover_interfaces = ["wg0", "eth0"]
 
 [[interfaces]]
 name = "wg0"
@@ -102,6 +106,8 @@ health_check_enabled = true
 health_check_hosts = ["1.1.1.1", "2606:4700:4700::1111"]
 health_check_latency_threshold_ms = 500
 health_check_packet_loss_threshold_percent = 50
+failover_mode = "global"
+failover_interfaces = []
 
 [[interfaces]]
 name = "eth0"
@@ -111,21 +117,49 @@ health_check_enabled = true
 health_check_hosts = ["8.8.8.8", "2001:4860:4860::8888"]
 health_check_latency_threshold_ms = 500
 health_check_packet_loss_threshold_percent = 50
+failover_mode = "disabled"
+failover_interfaces = []
 
 [upstream_resolver]
 type = "Quad9Https"
 ```
 
 Each enabled interface/host pair is checked using the global interval, timeout,
-and ping count, with ICMP echo requests bound to that interface. Prometheus exposes `interface_healthy`,
-`interface_latency_milliseconds`, `interface_latency_available`,
-`interface_packet_loss_percent`, `interface_health_check_enabled`,
-`interface_latency_threshold_milliseconds`,
-`interface_packet_loss_threshold_percent`,
-`interface_health_check_interval_seconds`,
-`interface_health_check_timeout_seconds`, `interface_health_check_ping_count`,
-`interface_health_checks_total`, and `interface_health_check_failures_total`,
-labelled by `interface` and `host`.
+and ping count. Probes use `ping -n -m <fwmark> -I <interface>` so the check follows the same fwmark-based routing model as steered traffic.
+
+Health is evaluated per host:
+
+- `health_check_latency_threshold_ms`: average latency above this marks the check unhealthy.
+- `health_check_packet_loss_threshold_percent`: packet loss above this marks the check unhealthy.
+- unreachable/no-route ping results are treated as unhealthy with 100% packet loss.
+
+Prometheus exposes these health metrics, labelled by `interface` and `host`:
+
+- `interface_healthy`
+- `interface_latency_milliseconds`
+- `interface_packet_loss_percent`
+- `interface_health_checks_total`
+- `interface_health_check_failures_total`
+
+#### High Availability Failover
+
+Failover is runtime-only: MonaDNS does not rewrite saved rule/list configuration. Instead, rules, lists, fake-IP mappings, and subnet mappings keep their stable policy IDs while MonaDNS updates the policy-to-fwmark mapping used by `nftables`.
+
+Global failover uses `failover_interfaces` as a preference order. For example:
+
+```toml
+failover_interfaces = ["warp1", "warp0", "eth0"]
+```
+
+If a rule normally uses `warp0` and `warp0` becomes unhealthy, MonaDNS picks the first healthy interface in that list, which would be `warp1` if it is healthy. When `warp0` becomes healthy again, MonaDNS switches back only after it has stayed healthy for `failover_recovery_delay_seconds`.
+
+Per interface:
+
+- `failover_mode = "global"` uses the global preference order.
+- `failover_mode = "disabled"` keeps traffic on that interface even when it is unhealthy.
+- `failover_mode = "custom"` uses that interface's `failover_interfaces` list instead of the global list.
+
+If no fallback candidate is healthy, traffic stays on the originally selected interface. Interfaces with health checks disabled are treated as usable.
 
 #### Upstream Resolver Types
 - `Quad9Https`, `CloudflareHttps`, `GoogleHttps`

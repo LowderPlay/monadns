@@ -1,5 +1,7 @@
 use crate::domain_controller::{DomainController, Intercept, PolicyId};
+use crate::failover;
 use crate::fake_ip::IpManager;
+use crate::health_check::InterfaceHealthRegistry;
 use crate::route_controller::RouteController;
 use arc_swap::ArcSwap;
 use hickory_proto::ProtoErrorKind;
@@ -24,6 +26,7 @@ pub struct HandlerState {
     pub upstream: Arc<ArcSwap<TokioResolver>>,
     pub domain_controller: Arc<dyn DomainController>,
     pub route_controller: Arc<dyn RouteController>,
+    pub health_status: InterfaceHealthRegistry,
 }
 
 #[derive(Clone)]
@@ -137,7 +140,11 @@ impl RequestHandler for FakeIpHandler {
         }) = state.domain_controller.should_intercept(&name).await
         {
             let config = state.config.load();
-            let iface_config = config.resolve_interface(Some(&interface));
+            let iface_config = failover::resolve_effective_interface(
+                &config,
+                Some(&interface),
+                &state.health_status,
+            );
 
             let fwmark = iface_config.fwmark;
             let actual_interface_name = &iface_config.name;

@@ -1,5 +1,5 @@
 use crate::app::App;
-use crate::config::{Config, PatchConfig, UpstreamResolverConfig};
+use crate::config::{Config, FailoverMode, PatchConfig, UpstreamResolverConfig};
 use crate::domain_controller::PolicyId;
 use crate::domain_controller::sqlite::{DomainList, DomainRule, GeoSource, IpList, IpRule};
 use crate::health_check::InterfaceHealthStatus;
@@ -31,7 +31,7 @@ async fn set_policy_mark_for_interface(
     policy_id: PolicyId,
     interface: Option<&str>,
 ) -> Result<(), String> {
-    let fwmark = app.current_config().resolve_interface(interface).fwmark;
+    let fwmark = app.effective_interface(interface).fwmark;
     let route_controller = app.handler().state.load().route_controller.clone();
     route_controller
         .set_policy_mark(policy_id, fwmark)
@@ -43,14 +43,14 @@ async fn set_policy_mark_for_interface(
 #[openapi(
     paths(
         get_config, patch_config, get_interface_health,
-        list_domain_rules, add_domain_rule, remove_domain_rule, 
+        list_domain_rules, add_domain_rule, remove_domain_rule,
         list_domain_lists, add_domain_list, remove_domain_list, sync_domain_list, reorder_domain_lists,
         list_ip_rules, add_ip_rule, remove_ip_rule,
         list_ip_lists, add_ip_list, remove_ip_list, sync_ip_list, reorder_ip_lists,
         list_geo_sources, add_geo_source, remove_geo_source, sync_geo_source, get_geo_options,
         export_domains, export_ips
     ),
-    components(schemas(Config, PatchConfig, UpstreamResolverConfig, DomainRule, DomainList, IpRule, IpList, GeoSource, AvailableGeoOptions, InterfaceHealthStatus)),
+    components(schemas(Config, FailoverMode, PatchConfig, UpstreamResolverConfig, DomainRule, DomainList, IpRule, IpList, GeoSource, AvailableGeoOptions, InterfaceHealthStatus)),
     modifiers(&SecurityAddon),
     security(
         ("api_key" = [])
@@ -213,7 +213,11 @@ async fn add_domain_rule(
 ) -> Result<Json<String>, String> {
     let rule_id = app
         .controller()
-        .add_rule(&rule.domain, rule.include_subdomains, rule.interface.clone())
+        .add_rule(
+            &rule.domain,
+            rule.include_subdomains,
+            rule.interface.clone(),
+        )
         .await
         .map_err(|e| e.to_string())?;
     set_policy_mark_for_interface(

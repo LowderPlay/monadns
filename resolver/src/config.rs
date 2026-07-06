@@ -26,6 +26,20 @@ where
 }
 
 #[derive(Clone, Debug, Serialize, Deserialize, utoipa::ToSchema)]
+#[serde(rename_all = "snake_case")]
+pub enum FailoverMode {
+    Global,
+    Disabled,
+    Custom,
+}
+
+impl Default for FailoverMode {
+    fn default() -> Self {
+        Self::Global
+    }
+}
+
+#[derive(Clone, Debug, Serialize, Deserialize, utoipa::ToSchema)]
 #[serde(default)]
 pub struct InterfaceConfig {
     pub name: String,
@@ -44,6 +58,8 @@ pub struct InterfaceConfig {
     pub health_check_hosts: Vec<String>,
     pub health_check_latency_threshold_ms: f64,
     pub health_check_packet_loss_threshold_percent: f64,
+    pub failover_mode: FailoverMode,
+    pub failover_interfaces: Vec<String>,
 }
 
 impl Default for InterfaceConfig {
@@ -59,6 +75,8 @@ impl Default for InterfaceConfig {
             health_check_hosts: vec!["1.1.1.1".to_string(), "2606:4700:4700::1111".to_string()],
             health_check_latency_threshold_ms: 500.0,
             health_check_packet_loss_threshold_percent: 50.0,
+            failover_mode: FailoverMode::Global,
+            failover_interfaces: Vec::new(),
         }
     }
 }
@@ -77,6 +95,8 @@ pub struct Config {
     pub health_check_interval_seconds: u64,
     pub health_check_timeout_seconds: u64,
     pub health_check_ping_count: u32,
+    pub failover_recovery_delay_seconds: u64,
+    pub failover_interfaces: Vec<String>,
 
     // Backwards compatibility fields
     #[serde(skip_serializing, default)]
@@ -107,6 +127,8 @@ impl Default for Config {
             health_check_interval_seconds: 15,
             health_check_timeout_seconds: 12,
             health_check_ping_count: 5,
+            failover_recovery_delay_seconds: 60,
+            failover_interfaces: vec!["wg0".to_string()],
             table_id: None,
             iface: None,
             tcp_mss_clamp: None,
@@ -129,6 +151,8 @@ pub struct PatchConfig {
     pub health_check_interval_seconds: Option<u64>,
     pub health_check_timeout_seconds: Option<u64>,
     pub health_check_ping_count: Option<u32>,
+    pub failover_recovery_delay_seconds: Option<u64>,
+    pub failover_interfaces: Option<Vec<String>>,
 }
 
 impl Config {
@@ -151,6 +175,9 @@ impl Config {
         let interfaces_configured = toml::from_str::<toml::Value>(&content)?
             .as_table()
             .is_some_and(|table| table.contains_key("interfaces"));
+        let failover_interfaces_configured = toml::from_str::<toml::Value>(&content)?
+            .as_table()
+            .is_some_and(|table| table.contains_key("failover_interfaces"));
         let mut config: Config = toml::from_str(&content)?;
 
         // Migration logic for backwards compatibility
@@ -172,6 +199,13 @@ impl Config {
             }
         } else if config.default_interface.is_empty() {
             config.default_interface = config.interfaces[0].name.clone();
+        }
+        if !failover_interfaces_configured || config.failover_interfaces.is_empty() {
+            config.failover_interfaces = config
+                .interfaces
+                .iter()
+                .map(|interface| interface.name.clone())
+                .collect();
         }
 
         Ok(config)
@@ -230,6 +264,12 @@ impl Config {
             health_check_ping_count: patch
                 .health_check_ping_count
                 .unwrap_or(self.health_check_ping_count),
+            failover_recovery_delay_seconds: patch
+                .failover_recovery_delay_seconds
+                .unwrap_or(self.failover_recovery_delay_seconds),
+            failover_interfaces: patch
+                .failover_interfaces
+                .unwrap_or_else(|| self.failover_interfaces.clone()),
             table_id: None,
             iface: None,
             tcp_mss_clamp: None,

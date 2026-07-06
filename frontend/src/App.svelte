@@ -20,12 +20,12 @@ type Tab =
 let activeTab = $state<Tab>("config");
 
 const tabs: { id: Tab; label: string }[] = [
-	{ id: "config", label: "Configuration" },
-	{ id: "lists", label: "Domain Lists" },
+	{ id: "config", label: "Settings" },
 	{ id: "geo-sources", label: "Geo Sources" },
 	{ id: "domains", label: "Domains" },
-	{ id: "ip-lists", label: "IP Lists" },
-	{ id: "ip-rules", label: "IP Rules" },
+	{ id: "ip-rules", label: "IPs" },
+	{ id: "lists", label: "Domain List Feeds" },
+	{ id: "ip-lists", label: "IP List Feeds" },
 ];
 </script>
 

@@ -1,6 +1,7 @@
 import { auth } from "./auth_state.svelte";
 
 export type ResolverProtocol = "Plain" | "Tls" | "Https";
+export type FailoverMode = "global" | "disabled" | "custom";
 
 export interface CustomNameserverConfig {
 	addr: string;
@@ -25,6 +26,8 @@ export interface InterfaceConfig {
 	health_check_hosts: string[];
 	health_check_latency_threshold_ms: number;
 	health_check_packet_loss_threshold_percent: number;
+	failover_mode: FailoverMode;
+	failover_interfaces: string[];
 }
 
 export interface Config {
@@ -37,6 +40,8 @@ export interface Config {
 	health_check_interval_seconds: number;
 	health_check_timeout_seconds: number;
 	health_check_ping_count: number;
+	failover_recovery_delay_seconds: number;
+	failover_interfaces: string[];
 }
 
 export interface PatchConfig {
@@ -49,6 +54,8 @@ export interface PatchConfig {
 	health_check_interval_seconds?: number;
 	health_check_timeout_seconds?: number;
 	health_check_ping_count?: number;
+	failover_recovery_delay_seconds?: number;
+	failover_interfaces?: string[];
 }
 
 export interface DomainRule {
@@ -103,6 +110,8 @@ export interface InterfaceHealthStatus {
 	healthy: boolean;
 	latency_ms: number | null;
 	packet_loss_percent: number;
+	healthy_since_ms: number | null;
+	last_unhealthy_at_ms: number | null;
 	updated_at_ms: number | null;
 	error: string | null;
 }
