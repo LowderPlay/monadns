@@ -13,7 +13,7 @@ pub trait RouteController: Send + Sync {
         fake_ip: IpAddr,
         real_ip: IpAddr,
         policy_id: PolicyId,
-        fwmark: u32,
+        replace_existing: bool,
     ) -> anyhow::Result<()>;
     async fn set_policy_mark(&self, policy_id: PolicyId, fwmark: u32) -> anyhow::Result<()>;
     async fn update_interfaces(&self, interfaces: Vec<InterfaceConfig>) -> anyhow::Result<()>;
@@ -33,11 +33,11 @@ impl RouteController for DummyRouteController {
         fake_ip: IpAddr,
         real_ip: IpAddr,
         policy_id: PolicyId,
-        fwmark: u32,
+        replace_existing: bool,
     ) -> anyhow::Result<()> {
         println!(
-            "mapping {} -> {} (policy {}, fwmark {})",
-            fake_ip, real_ip, policy_id, fwmark
+            "mapping {} -> {} (policy {}, replace_existing {})",
+            fake_ip, real_ip, policy_id, replace_existing
         );
         Ok(())
     }

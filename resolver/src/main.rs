@@ -15,6 +15,7 @@ use env_logger::Env;
 use hickory_server::ServerFuture;
 use log::info;
 use std::sync::Arc;
+use std::time::Duration;
 use tokio::net::UdpSocket;
 use tokio::signal::unix::{SignalKind, signal};
 
@@ -37,6 +38,8 @@ async fn main() -> anyhow::Result<()> {
     let mut server = ServerFuture::new(handler.clone());
     let socket = UdpSocket::bind(Config::get_dns_bind()).await?;
     server.register_socket(socket);
+    let tcp_listener = tokio::net::TcpListener::bind(Config::get_dns_bind()).await?;
+    server.register_listener(tcp_listener, Duration::from_secs(10));
 
     let api_app = api::create_router(app.clone());
 

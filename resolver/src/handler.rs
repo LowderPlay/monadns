@@ -109,6 +109,7 @@ impl RequestHandler for FakeIpHandler {
         let name = query.name().to_string();
         let query_type = query.query_type().to_string();
         let mut header = Header::response_from_request(request.header());
+        header.set_recursion_available(true);
         let builder = MessageResponseBuilder::from_message_request(request);
         debug!("query: [{}] {}", query.query_type(), name);
 

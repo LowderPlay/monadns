@@ -4,7 +4,7 @@ use crate::route_controller::{RouteController, sweepable};
 use async_trait::async_trait;
 use futures::stream::TryStreamExt;
 use ipnet::IpNet;
-use log::{error, info};
+use log::error;
 use nftables::batch::Batch;
 use nftables::expr::{
     Expression, Meta, MetaKey, NamedExpression, Payload, PayloadField, Prefix, TcpOption,
@@ -18,6 +18,7 @@ use rtnetlink::{IpVersion, new_connection};
 use std::collections::{HashMap, HashSet};
 use std::net::IpAddr;
 use std::sync::{Arc, RwLock};
+use tokio::sync::Mutex;
 
 const MAP_V4: &str = "fake_to_real_v4";
 const MAP_V6: &str = "fake_to_real_v6";
@@ -31,6 +32,7 @@ const MAP_POLICY_MARK: &str = "policy_to_mark";
 pub struct NetworkManager {
     interfaces: Arc<RwLock<Vec<InterfaceConfig>>>,
     nft_table_name: String,
+    nft_update_lock: Arc<Mutex<()>>,
 }
 
 impl NetworkManager {
@@ -38,6 +40,7 @@ impl NetworkManager {
         Self {
             interfaces: Arc::new(RwLock::new(interfaces)),
             nft_table_name: "monadns_steering".to_string(),
+            nft_update_lock: Arc::new(Mutex::new(())),
         }
     }
 
@@ -745,10 +748,10 @@ impl RouteController for NetworkManager {
         fake_ip: IpAddr,
         real_ip: IpAddr,
         policy_id: PolicyId,
-        fwmark: u32,
+        replace_existing: bool,
     ) -> anyhow::Result<()> {
+        let _guard = self.nft_update_lock.lock().await;
         let policy_key = policy_id.nft_key()?;
-        self.set_policy_mark(policy_id, fwmark).await?;
 
         let (map_name, policy_map_name) = match fake_ip {
             IpAddr::V4(_) => (MAP_V4, MAP_V4_POLICY),
@@ -756,21 +759,19 @@ impl RouteController for NetworkManager {
         };
 
         let mut batch = Batch::new();
-        // Remove existing mapping for this fake_ip from BOTH maps
-        for m in [map_name, policy_map_name] {
-            batch.delete(NfListObject::Element(Element {
-                family: NfFamily::INet,
-                table: self.nft_table_name.clone().into(),
-                name: m.into(),
-                elem: vec![Expression::String(fake_ip.to_string().into())].into(),
-            }));
+        if replace_existing {
+            // Delete and replacement are committed as one nftables transaction, so
+            // packets can never observe a half-replaced mapping.
+            for m in [map_name, policy_map_name] {
+                batch.delete(NfListObject::Element(Element {
+                    family: NfFamily::INet,
+                    table: self.nft_table_name.clone().into(),
+                    name: m.into(),
+                    elem: vec![Expression::String(fake_ip.to_string().into())].into(),
+                }));
+            }
         }
 
-        if let Ok(_) = nftables::helper::apply_ruleset(&batch.to_nftables()) {
-            info!("removed conflicting map entries for {}", fake_ip);
-        }
-
-        let mut batch = Batch::new();
         // Add to fake_to_real map
         batch.add(NfListObject::Element(Element {
             family: NfFamily::INet,
@@ -801,8 +802,11 @@ impl RouteController for NetworkManager {
     }
 
     async fn set_policy_mark(&self, policy_id: PolicyId, fwmark: u32) -> anyhow::Result<()> {
+        let _guard = self.nft_update_lock.lock().await;
         let policy_key = policy_id.nft_key()?;
 
+        // Keep delete and add in one transaction. If this is the first value for
+        // the policy, retry with a plain add after the atomic replacement fails.
         let mut batch = Batch::new();
         batch.delete(NfListObject::Element(Element {
             family: NfFamily::INet,
@@ -810,9 +814,6 @@ impl RouteController for NetworkManager {
             name: MAP_POLICY_MARK.into(),
             elem: vec![Expression::Number(policy_key)].into(),
         }));
-        let _ = nftables::helper::apply_ruleset(&batch.to_nftables());
-
-        let mut batch = Batch::new();
         batch.add(NfListObject::Element(Element {
             family: NfFamily::INet,
             table: self.nft_table_name.clone().into(),
@@ -824,11 +825,25 @@ impl RouteController for NetworkManager {
             .into(),
         }));
 
-        nftables::helper::apply_ruleset(&batch.to_nftables())?;
+        if nftables::helper::apply_ruleset(&batch.to_nftables()).is_err() {
+            let mut batch = Batch::new();
+            batch.add(NfListObject::Element(Element {
+                family: NfFamily::INet,
+                table: self.nft_table_name.clone().into(),
+                name: MAP_POLICY_MARK.into(),
+                elem: vec![Expression::List(vec![
+                    Expression::Number(policy_key),
+                    Expression::Number(fwmark),
+                ])]
+                .into(),
+            }));
+            nftables::helper::apply_ruleset(&batch.to_nftables())?;
+        }
         Ok(())
     }
 
     async fn update_interfaces(&self, interfaces: Vec<InterfaceConfig>) -> anyhow::Result<()> {
+        let _guard = self.nft_update_lock.lock().await;
         let old_interfaces = self.interfaces();
         let mut routing_cleanup = old_interfaces.clone();
         routing_cleanup.extend(interfaces.clone());
@@ -842,6 +857,7 @@ impl RouteController for NetworkManager {
     }
 
     async fn cleanup(&self) -> anyhow::Result<()> {
+        let _guard = self.nft_update_lock.lock().await;
         let interfaces = self.interfaces();
         let mut batch = Batch::new();
 
@@ -946,6 +962,7 @@ impl RouteController for NetworkManager {
     }
 
     async fn sync_subnets(&self, subnets: Vec<(String, u32, i64, PolicyId)>) -> anyhow::Result<()> {
+        let _guard = self.nft_update_lock.lock().await;
         let mut v4_raw = Vec::new();
         let mut v6_raw = Vec::new();
         let mut policy_marks = HashMap::new();

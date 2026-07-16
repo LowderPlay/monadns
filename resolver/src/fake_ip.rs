@@ -99,11 +99,8 @@ impl IpManager {
     ) -> anyhow::Result<IpAddr> {
         let key = (*real, policy_id);
         if let Some(assigned) = self.real_to_fake.get(&key).map(|r| *r) {
-            let mut state = self.state.lock().await;
-            state.lru.get(&assigned.fake_ip);
-            drop(state);
-
             if assigned.fwmark != fwmark {
+                self.controller.set_policy_mark(policy_id, fwmark).await?;
                 self.real_to_fake.insert(
                     key,
                     AssignedIp {
@@ -111,57 +108,134 @@ impl IpManager {
                         fwmark,
                     },
                 );
-                self.controller.set_policy_mark(policy_id, fwmark).await?;
             }
 
+            self.state.lock().await.lru.get(&assigned.fake_ip);
             return Ok(assigned.fake_ip);
         }
 
-        let ip = {
-            let mut state = self.state.lock().await;
+        // Keep allocation and installation coordinated. In particular, do not publish
+        // a fake IP in the in-memory indexes until nftables accepted the mapping.
+        let mut state = self.state.lock().await;
 
-            if state.next_host_index < state.total_hosts {
-                let ip = self.get_nth_host(state.next_host_index);
-                state.next_host_index += 1;
+        // Another request may have installed this key while this one waited for the lock.
+        if let Some(assigned) = self.real_to_fake.get(&key).map(|r| *r) {
+            state.lru.get(&assigned.fake_ip);
+            return Ok(assigned.fake_ip);
+        }
 
-                if let Some((old_ip, _)) = state.lru.push(ip, ()) {
-                    if let Some((_, old_key)) = self.fake_to_real.remove(&old_ip) {
-                        self.real_to_fake.remove(&old_key);
-                    }
-                }
-
-                self.real_to_fake.insert(
-                    key,
-                    AssignedIp {
-                        fake_ip: ip,
-                        fwmark,
-                    },
-                );
-                self.fake_to_real.insert(ip, key);
-                ip
-            } else {
-                let (old_ip, _) = state.lru.pop_lru().expect("Pool should not be empty");
-                if let Some((_, old_key)) = self.fake_to_real.remove(&old_ip) {
-                    self.real_to_fake.remove(&old_key);
-                }
-
-                self.real_to_fake.insert(
-                    key,
-                    AssignedIp {
-                        fake_ip: old_ip,
-                        fwmark,
-                    },
-                );
-                self.fake_to_real.insert(old_ip, key);
-                state.lru.put(old_ip, ());
-                old_ip
-            }
+        let (ip, replace_existing) = if state.next_host_index < state.total_hosts {
+            let ip = self.get_nth_host(state.next_host_index);
+            state.next_host_index += 1;
+            (ip, false)
+        } else {
+            let (old_ip, _) = state.lru.peek_lru().expect("Pool should not be empty");
+            (*old_ip, true)
         };
 
-        self.controller
-            .add_mapping(ip, *real, policy_id, fwmark)
-            .await?;
+        if let Err(error) = self
+            .controller
+            .add_mapping(ip, *real, policy_id, replace_existing)
+            .await
+        {
+            if !replace_existing {
+                state.next_host_index -= 1;
+            }
+            return Err(error);
+        }
 
+        if replace_existing {
+            state.lru.pop_lru();
+            if let Some((_, old_key)) = self.fake_to_real.remove(&ip) {
+                self.real_to_fake.remove(&old_key);
+            }
+        }
+
+        self.real_to_fake.insert(
+            key,
+            AssignedIp {
+                fake_ip: ip,
+                fwmark,
+            },
+        );
+        self.fake_to_real.insert(ip, key);
+        state.lru.put(ip, ());
         Ok(ip)
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use crate::config::InterfaceConfig;
+    use async_trait::async_trait;
+    use std::sync::atomic::{AtomicUsize, Ordering};
+
+    struct FailOnceController {
+        mapping_attempts: AtomicUsize,
+    }
+
+    #[async_trait]
+    impl RouteController for FailOnceController {
+        async fn add_mapping(
+            &self,
+            _fake_ip: IpAddr,
+            _real_ip: IpAddr,
+            _policy_id: PolicyId,
+            _replace_existing: bool,
+        ) -> anyhow::Result<()> {
+            if self.mapping_attempts.fetch_add(1, Ordering::SeqCst) == 0 {
+                anyhow::bail!("injected mapping failure");
+            }
+            Ok(())
+        }
+
+        async fn set_policy_mark(&self, _policy_id: PolicyId, _fwmark: u32) -> anyhow::Result<()> {
+            Ok(())
+        }
+
+        async fn update_interfaces(&self, _interfaces: Vec<InterfaceConfig>) -> anyhow::Result<()> {
+            Ok(())
+        }
+
+        async fn cleanup(&self) -> anyhow::Result<()> {
+            Ok(())
+        }
+
+        async fn fetch_metrics(&self) -> anyhow::Result<()> {
+            Ok(())
+        }
+
+        async fn sync_subnets(
+            &self,
+            _subnets: Vec<(String, u32, i64, PolicyId)>,
+        ) -> anyhow::Result<()> {
+            Ok(())
+        }
+    }
+
+    #[tokio::test]
+    async fn failed_mapping_is_not_published_and_is_retried() {
+        let controller = Arc::new(FailOnceController {
+            mapping_attempts: AtomicUsize::new(0),
+        });
+        let manager = IpManager::new(controller.clone(), "198.18.0.0/30".parse().unwrap());
+        let real: IpAddr = "203.0.113.10".parse().unwrap();
+        let policy_id = PolicyId::DomainRule(1);
+
+        assert!(manager.get_or_assign_ip(&real, policy_id, 7).await.is_err());
+        assert!(manager.real_to_fake.get(&(real, policy_id)).is_none());
+
+        let fake = manager.get_or_assign_ip(&real, policy_id, 7).await.unwrap();
+
+        assert_eq!(fake, "198.18.0.1".parse::<IpAddr>().unwrap());
+        assert_eq!(controller.mapping_attempts.load(Ordering::SeqCst), 2);
+        assert_eq!(
+            manager
+                .real_to_fake
+                .get(&(real, policy_id))
+                .map(|entry| entry.fake_ip),
+            Some(fake)
+        );
     }
 }
