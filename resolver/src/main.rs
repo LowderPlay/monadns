@@ -21,7 +21,9 @@ use tokio::signal::unix::{SignalKind, signal};
 
 #[tokio::main]
 async fn main() -> anyhow::Result<()> {
-    env_logger::Builder::from_env(Env::default().default_filter_or("info")).init();
+    env_logger::Builder::from_env(Env::default().default_filter_or("info"))
+        .filter_module("hickory_server::server", log::LevelFilter::Warn)
+        .init();
 
     let config = Config::load()?;
 

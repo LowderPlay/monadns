@@ -31,6 +31,7 @@ const MAP_POLICY_MARK: &str = "policy_to_mark";
 #[derive(Clone)]
 pub struct NetworkManager {
     interfaces: Arc<RwLock<Vec<InterfaceConfig>>>,
+    policy_marks: Arc<RwLock<HashMap<u32, u32>>>,
     nft_table_name: String,
     nft_update_lock: Arc<Mutex<()>>,
 }
@@ -39,6 +40,7 @@ impl NetworkManager {
     pub fn new(interfaces: Vec<InterfaceConfig>) -> Self {
         Self {
             interfaces: Arc::new(RwLock::new(interfaces)),
+            policy_marks: Arc::new(RwLock::new(HashMap::new())),
             nft_table_name: "monadns_steering".to_string(),
             nft_update_lock: Arc::new(Mutex::new(())),
         }
@@ -805,15 +807,15 @@ impl RouteController for NetworkManager {
         let _guard = self.nft_update_lock.lock().await;
         let policy_key = policy_id.nft_key()?;
 
-        // Keep delete and add in one transaction. If this is the first value for
-        // the policy, retry with a plain add after the atomic replacement fails.
         let mut batch = Batch::new();
-        batch.delete(NfListObject::Element(Element {
-            family: NfFamily::INet,
-            table: self.nft_table_name.clone().into(),
-            name: MAP_POLICY_MARK.into(),
-            elem: vec![Expression::Number(policy_key)].into(),
-        }));
+        if self.policy_marks.read().unwrap().contains_key(&policy_key) {
+            batch.delete(NfListObject::Element(Element {
+                family: NfFamily::INet,
+                table: self.nft_table_name.clone().into(),
+                name: MAP_POLICY_MARK.into(),
+                elem: vec![Expression::Number(policy_key)].into(),
+            }));
+        }
         batch.add(NfListObject::Element(Element {
             family: NfFamily::INet,
             table: self.nft_table_name.clone().into(),
@@ -825,20 +827,11 @@ impl RouteController for NetworkManager {
             .into(),
         }));
 
-        if nftables::helper::apply_ruleset(&batch.to_nftables()).is_err() {
-            let mut batch = Batch::new();
-            batch.add(NfListObject::Element(Element {
-                family: NfFamily::INet,
-                table: self.nft_table_name.clone().into(),
-                name: MAP_POLICY_MARK.into(),
-                elem: vec![Expression::List(vec![
-                    Expression::Number(policy_key),
-                    Expression::Number(fwmark),
-                ])]
-                .into(),
-            }));
-            nftables::helper::apply_ruleset(&batch.to_nftables())?;
-        }
+        nftables::helper::apply_ruleset(&batch.to_nftables())?;
+        self.policy_marks
+            .write()
+            .unwrap()
+            .insert(policy_key, fwmark);
         Ok(())
     }
 
@@ -1037,31 +1030,33 @@ impl RouteController for NetworkManager {
             }
         }
 
+        let installed_policy_marks = self.policy_marks.read().unwrap().clone();
         for policy_key in policy_marks.keys() {
-            let mut delete_batch = Batch::new();
-            delete_batch.delete(NfListObject::Element(Element {
-                family: NfFamily::INet,
-                table: self.nft_table_name.clone().into(),
-                name: MAP_POLICY_MARK.into(),
-                elem: vec![Expression::Number(*policy_key)].into(),
-            }));
-            let _ = nftables::helper::apply_ruleset(&delete_batch.to_nftables());
+            if installed_policy_marks.contains_key(policy_key) {
+                batch.delete(NfListObject::Element(Element {
+                    family: NfFamily::INet,
+                    table: self.nft_table_name.clone().into(),
+                    name: MAP_POLICY_MARK.into(),
+                    elem: vec![Expression::Number(*policy_key)].into(),
+                }));
+            }
         }
 
-        for (policy_key, fwmark) in policy_marks {
+        for (policy_key, fwmark) in &policy_marks {
             batch.add(NfListObject::Element(Element {
                 family: NfFamily::INet,
                 table: self.nft_table_name.clone().into(),
                 name: MAP_POLICY_MARK.into(),
                 elem: vec![Expression::List(vec![
-                    Expression::Number(policy_key),
-                    Expression::Number(fwmark),
+                    Expression::Number(*policy_key),
+                    Expression::Number(*fwmark),
                 ])]
                 .into(),
             }));
         }
 
         nftables::helper::apply_ruleset(&batch.to_nftables())?;
+        self.policy_marks.write().unwrap().extend(policy_marks);
         Ok(())
     }
 }
