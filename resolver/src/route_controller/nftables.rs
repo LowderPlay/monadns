@@ -510,7 +510,7 @@ impl NetworkManager {
         }
     }
 
-    fn get_mtu_clamp_rule(&self, chain: &'static str, fwmark: u32, mtu: u32) -> Rule<'_> {
+    fn get_mtu_clamp_rule(&self, chain: &'static str, fwmark: u32, max_mss: u32) -> Rule<'_> {
         Rule {
             family: NfFamily::INet,
             table: self.nft_table_name.clone().into(),
@@ -531,12 +531,20 @@ impl NetworkManager {
                     op: Operator::EQ,
                     right: Expression::String("syn".into()),
                 }),
+                Statement::Match(Match {
+                    left: Expression::Named(NamedExpression::TcpOption(TcpOption {
+                        name: "maxseg".into(),
+                        field: Some("size".into()),
+                    })),
+                    right: Expression::Number(max_mss),
+                    op: Operator::GT,
+                }),
                 Statement::Mangle(Mangle {
                     key: Expression::Named(NamedExpression::TcpOption(TcpOption {
                         name: "maxseg".into(),
                         field: Some("size".into()),
                     })),
-                    value: Expression::Number(mtu),
+                    value: Expression::Number(max_mss),
                 }),
             ]
             .into(),
