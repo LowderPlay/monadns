@@ -537,7 +537,10 @@ impl NetworkManager {
                         field: Some("size".into()),
                     })),
                     right: Expression::Number(max_mss),
-                    op: Operator::GT,
+                    // nftables 0.6.3 names this variant from nft's internal
+                    // comparison perspective; `LT` serializes to the `>`
+                    // operator required for an upper MSS bound.
+                    op: Operator::LT,
                 }),
                 Statement::Mangle(Mangle {
                     key: Expression::Named(NamedExpression::TcpOption(TcpOption {
